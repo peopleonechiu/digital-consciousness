@@ -31,12 +31,58 @@
       cursor: crosshair;
     }
 
+    #webcam-container {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      width: 200px;
+      border: 2px solid #000;
+      background: #000;
+      z-index: 1000;
+      opacity: 0.85;
+      transition: opacity 0.3s;
+    }
+
+    #webcam-container:hover {
+      opacity: 1;
+    }
+
+    #webcam-container.hidden {
+      display: none;
+    }
+
     #webcam {
-      position: absolute;
-      top: -9999px;
-      left: -9999px;
-      width: 320px;
-      height: 240px;
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+
+    #toggle-btn {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      width: 40px;
+      height: 40px;
+      background: #fff;
+      border: 2px solid #000;
+      cursor: pointer;
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+      font-weight: bold;
+      z-index: 1001;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.2s;
+    }
+
+    #toggle-btn:hover {
+      background: #f0f0f0;
+    }
+
+    #toggle-btn.active {
+      background: #000;
+      color: #fff;
     }
 
     #overlay {
@@ -44,24 +90,21 @@
       top: 20px;
       left: 20px;
       font-size: 12px;
-      color: #888;
+      color: #666;
       pointer-events: none;
       z-index: 100;
-    }
-
-    #overlay.active {
-      color: #000;
-    }
-
-    .char {
-      display: inline;
-      transition: opacity 0.3s ease;
     }
   </style>
 </head>
 <body>
-  <video id="webcam" autoplay playsinline muted></video>
-  <div id="overlay">Initializing webcam...</div>
+  <div id="overlay">Initializing...</div>
+
+  <button id="toggle-btn" title="Toggle webcam preview">📷</button>
+
+  <div id="webcam-container">
+    <video id="webcam" autoplay playsinline muted></video>
+  </div>
+
   <div id="canvas"></div>
 
   <script>
@@ -69,29 +112,23 @@
     // CONFIGURATION
     // ========================================
     const CONFIG = {
-      cols: 80,
-      rows: 45,
-      growthRate: 1.2,
-      branchProbability: 0.12,
-      maxTips: 25,
-      maxNodes: 350,
-      motionThreshold: 15,
-      motionSmoothingFrames: 4,
-      dormantThreshold: 180, // frames (~3 seconds at 60fps)
-      ambientDrift: 0.02,
-      colors: {
-        dormant: '#cccccc',
-        established: '#999999',
-        active: '#000000',
-        tip: '#333333'
-      }
+      cols: 90,
+      rows: 50,
+      growthRate: 1.5,
+      branchProbability: 0.10,
+      maxTips: 30,
+      maxNodes: 400,
+      motionThreshold: 12,
+      motionSmoothingFrames: 5,
+      dormantThreshold: 240,
+      ambientDrift: 0.03
     };
 
     const CHARS = {
-      dormant: ['.', '·', ':', '˙'],
-      established: ['-', '|', '+', '\\', '/', 'x'],
-      active: ['@', '#', '*', '█'],
-      junction: ['○', '◉', '◎', '⊕']
+      dormant: ['.', '·', ':', '˙', ','],
+      established: ['-', '|', '+', '\\', '/', 'x', '=', '~'],
+      active: ['@', '#', '*', '█', '▓', '▒'],
+      junction: ['○', '◉', '◎', '⊕', '⊙']
     };
 
     // ========================================
@@ -99,11 +136,10 @@
     // ========================================
     let nodes = [];
     let tips = [];
-    let connections = new Map();
     let motionHistory = [];
     let motionSources = [];
-    let lastFrameTime = 0;
     let frameCount = 0;
+    let webcamActive = false;
 
     // ========================================
     // DOM ELEMENTS
@@ -111,8 +147,18 @@
     const webcamEl = document.getElementById('webcam');
     const canvasEl = document.getElementById('canvas');
     const overlayEl = document.getElementById('overlay');
-    let ctx;
+    const toggleBtn = document.getElementById('toggle-btn');
+    const webcamContainer = document.getElementById('webcam-container');
+
     let hiddenCanvas, hiddenCtx;
+
+    // ========================================
+    // TOGGLE WEBCAM PREVIEW
+    // ========================================
+    toggleBtn.addEventListener('click', () => {
+      webcamContainer.classList.toggle('hidden');
+      toggleBtn.classList.toggle('active');
+    });
 
     // ========================================
     // NODE CLASS
@@ -137,12 +183,15 @@
         this.age++;
         if (motionSources.length === 0) {
           this.dormantFrames++;
-          this.opacity = Math.max(0.3, 1 - (this.dormantFrames / CONFIG.dormantThreshold));
-          this.char = this.randomChar('dormant');
+          const fade = Math.min(1, this.dormantFrames / CONFIG.dormantThreshold);
+          this.opacity = Math.max(0.25, 1 - fade * 0.75);
+          if (this.dormantFrames > 30) {
+            this.char = this.randomChar('dormant');
+          }
         } else {
           this.dormantFrames = 0;
-          this.opacity = Math.min(1, this.opacity + 0.05);
-          if (this.age > 100) {
+          this.opacity = Math.min(1, this.opacity + 0.08);
+          if (this.age > 80 && this.age % 20 === 0) {
             this.char = this.randomChar('established');
           }
         }
@@ -158,9 +207,11 @@
         this.y = y;
         this.angle = angle !== null ? angle : Math.random() * Math.PI * 2;
         this.depth = depth;
-        this.speed = CONFIG.growthRate * (0.8 + Math.random() * 0.4);
-        this.wobble = (Math.random() - 0.5) * 0.3;
+        this.speed = CONFIG.growthRate * (0.7 + Math.random() * 0.6);
+        this.wobbleOffset = Math.random() * Math.PI * 2;
+        this.wobbleSpeed = 0.05 + Math.random() * 0.05;
         this.char = this.randomChar('active');
+        this.life = 0;
       }
 
       randomChar(type) {
@@ -169,40 +220,56 @@
       }
 
       update() {
+        this.life++;
         this.depth += this.speed;
 
-        // Apply wobble
-        this.wobble += (Math.random() - 0.5) * 0.1;
-        this.wobble = Math.max(-0.4, Math.min(0.4, this.wobble));
+        // Organic wobble
+        const wobble = Math.sin(this.life * this.wobbleSpeed + this.wobbleOffset) * 0.25;
 
-        // Determine target angle based on motion
-        let targetAngle = this.wobble;
+        // Target angle toward motion
+        let targetAngle = wobble;
         if (motionSources.length > 0) {
           const nearest = this.findNearestMotion();
           if (nearest) {
             const dx = nearest.x - this.x;
             const dy = nearest.y - this.y;
-            targetAngle = Math.atan2(dy, dx);
+            const target = Math.atan2(dy, dx);
+            targetAngle = target + wobble;
           }
         }
 
-        // Blend toward target
-        this.angle += (targetAngle - this.angle) * 0.08 + this.wobble * 0.1;
+        // Smooth angle transition
+        let angleDiff = targetAngle - this.angle;
+        while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+        while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+        this.angle += angleDiff * 0.1;
 
         // Move
         this.x += Math.cos(this.angle) * this.speed;
         this.y += Math.sin(this.angle) * this.speed;
 
-        // Occasionally update character
-        if (Math.random() < 0.1) {
+        // Random character mutation
+        if (Math.random() < 0.08) {
           this.char = this.randomChar('active');
         }
 
-        // Boundary bounce
-        if (this.x < 0 || this.x >= CONFIG.cols || this.y < 0 || this.y >= CONFIG.rows) {
-          this.angle += Math.PI / 2 + (Math.random() - 0.5);
-          this.x = Math.max(0, Math.min(CONFIG.cols - 1, this.x));
-          this.y = Math.max(0, Math.min(CONFIG.rows - 1, this.y));
+        // Boundary handling
+        const margin = 3;
+        if (this.x < margin) {
+          this.angle = Math.PI - this.angle + (Math.random() - 0.5) * 0.5;
+          this.x = margin;
+        }
+        if (this.x >= CONFIG.cols - margin) {
+          this.angle = Math.PI - this.angle + (Math.random() - 0.5) * 0.5;
+          this.x = CONFIG.cols - margin - 1;
+        }
+        if (this.y < margin) {
+          this.angle = -this.angle + (Math.random() - 0.5) * 0.5;
+          this.y = margin;
+        }
+        if (this.y >= CONFIG.rows - margin) {
+          this.angle = -this.angle + (Math.random() - 0.5) * 0.5;
+          this.y = CONFIG.rows - margin - 1;
         }
       }
 
@@ -223,11 +290,14 @@
       }
 
       shouldBranch() {
-        return Math.random() < CONFIG.branchProbability && this.depth > 5 && this.depth < 80;
+        return Math.random() < CONFIG.branchProbability &&
+               this.depth > 8 &&
+               this.depth < 100 &&
+               this.life > 20;
       }
 
       isMature() {
-        return this.depth > 120 + Math.random() * 60;
+        return this.depth > 150 + Math.random() * 80;
       }
     }
 
@@ -251,32 +321,33 @@
         hiddenCanvas.height = 120;
         hiddenCtx = hiddenCanvas.getContext('2d', { willReadFrequently: true });
 
-        overlayEl.textContent = 'Webcam active — move to grow neural fibers';
-        overlayEl.classList.add('active');
+        webcamActive = true;
+        overlayEl.textContent = 'Move to grow neural fibers';
+        toggleBtn.classList.add('active');
 
         return true;
       } catch (err) {
-        overlayEl.textContent = 'Webcam unavailable — ambient mode';
+        overlayEl.textContent = 'Webcam unavailable — try refreshing';
         console.warn('Webcam error:', err);
         return false;
       }
     }
 
     function processWebcam() {
-      if (!webcamEl.readyState || webcamEl.readyState < 2) return;
+      if (!webcamActive || !webcamEl.readyState || webcamEl.readyState < 2) return;
 
-      // Downsample webcam frame
       hiddenCtx.drawImage(webcamEl, 0, 0, 160, 120);
       const frame = hiddenCtx.getImageData(0, 0, 160, 120);
       const data = frame.data;
 
-      // Calculate motion
+      // Detect motion blocks
       const motionPoints = [];
-      const blockSize = 10;
+      const blockSize = 12;
 
       for (let by = 0; by < 120; by += blockSize) {
         for (let bx = 0; bx < 160; bx += blockSize) {
           let blockMotion = 0;
+          let count = 0;
 
           for (let y = by; y < by + blockSize && y < 120; y++) {
             for (let x = bx; x < bx + blockSize && x < 160; x++) {
@@ -288,12 +359,13 @@
                 const prev = motionHistory[motionHistory.length - 1].get(histKey);
                 if (prev !== undefined) {
                   blockMotion += Math.abs(brightness - prev);
+                  count++;
                 }
               }
             }
           }
 
-          if (blockMotion > CONFIG.motionThreshold * 5) {
+          if (count > 0 && blockMotion / count > CONFIG.motionThreshold) {
             motionPoints.push({
               x: bx / 160,
               y: by / 120
@@ -302,7 +374,7 @@
         }
       }
 
-      // Store brightness map for next frame
+      // Store brightness map
       const brightnessMap = new Map();
       for (let y = 0; y < 120; y += 8) {
         for (let x = 0; x < 160; x += 8) {
@@ -316,121 +388,116 @@
         motionHistory.shift();
       }
 
-      // Update motion sources (smoothed)
-      motionSources = motionPoints.map(pt => ({
+      // Convert to canvas coordinates and cluster
+      const rawSources = motionPoints.map(pt => ({
         x: pt.x * CONFIG.cols,
-        y: pt.y * CONFIG.rows,
-        weight: 1
+        y: pt.y * CONFIG.rows
       }));
 
       // Cluster nearby points
-      if (motionSources.length > 5) {
+      if (rawSources.length > 0) {
         const clustered = [];
-        const clusterDist = 8;
+        const clusterDist = 10;
 
-        for (const source of motionSources) {
+        for (const source of rawSources) {
           let merged = false;
           for (const cluster of clustered) {
             const dx = source.x - cluster.x;
             const dy = source.y - cluster.y;
             if (Math.sqrt(dx * dx + dy * dy) < clusterDist) {
-              cluster.x = (cluster.x + source.x) / 2;
-              cluster.y = (cluster.y + source.y) / 2;
-              cluster.weight++;
+              cluster.x = cluster.x * 0.7 + source.x * 0.3;
+              cluster.y = cluster.y * 0.7 + source.y * 0.3;
+              cluster.weight = (cluster.weight || 1) + 1;
               merged = true;
               break;
             }
           }
           if (!merged) {
-            clustered.push({ ...source });
+            clustered.push({ x: source.x, y: source.y, weight: 1 });
           }
         }
 
-        motionSources = clustered.slice(0, 8);
+        motionSources = clustered
+          .sort((a, b) => b.weight - a.weight)
+          .slice(0, 6);
+      } else {
+        motionSources = [];
       }
     }
 
     // ========================================
-    // NEURAL NETWORK LOGIC
+    // NEURAL NETWORK
     // ========================================
     function initNetwork() {
-      // Create initial root nodes
-      const centerX = CONFIG.cols / 2;
-      const centerY = CONFIG.rows / 2;
+      const cx = CONFIG.cols / 2;
+      const cy = CONFIG.rows / 2;
 
-      nodes.push(new Node(centerX, centerY, true));
-      nodes.push(new Node(centerX - 10, centerY - 5, true));
-      nodes.push(new Node(centerX + 10, centerY + 5, true));
+      // Create root nodes in a triangle formation
+      const roots = [
+        [cx, cy],
+        [cx - 15, cy - 8],
+        [cx + 15, cy - 8],
+        [cx - 8, cy + 12],
+        [cx + 8, cy + 12]
+      ];
 
-      tips.push(new Tip(centerX, centerY, Math.PI * 0.25));
-      tips.push(new Tip(centerX - 10, centerY - 5, Math.PI * 0.75));
-      tips.push(new Tip(centerX + 10, centerY + 5, Math.PI * 1.5));
+      for (const [x, y] of roots) {
+        nodes.push(new Node(x, y, true));
+      }
+
+      // Initial growth tips
+      const angles = [0, Math.PI * 0.4, Math.PI * 0.8, Math.PI * 1.2, Math.PI * 1.6];
+      for (let i = 0; i < angles.length; i++) {
+        tips.push(new Tip(roots[i % roots.length][0], roots[i % roots.length][1], angles[i]));
+      }
     }
 
     function updateNetwork() {
-      // Update existing nodes
+      // Update nodes
       for (const node of nodes) {
         node.update();
       }
 
-      // Process growing tips
+      // Process tips
       for (let i = tips.length - 1; i >= 0; i--) {
         const tip = tips[i];
 
-        // Check if tip should become a node
-        const shouldConvert = tip.isMature() ||
-          (motionSources.length === 0 && Math.random() < 0.005);
-
-        if (shouldConvert) {
-          // Add as node
-          const node = new Node(
-            Math.round(tip.x),
-            Math.round(tip.y)
-          );
+        // Convert mature tips to nodes
+        if (tip.isMature()) {
+          const node = new Node(Math.round(tip.x), Math.round(tip.y));
           nodes.push(node);
-
-          // Remove tip
           tips.splice(i, 1);
           continue;
         }
 
-        // Check for branching
+        // Branching
         if (tip.shouldBranch() && tips.length < CONFIG.maxTips) {
-          const branchAngle = tip.angle + (Math.random() > 0.5 ? 0.5 : -0.5);
+          const branchAngle = tip.angle + (Math.random() > 0.5 ? 0.6 : -0.6);
           tips.push(new Tip(tip.x, tip.y, branchAngle, 0));
         }
 
-        // Check for connecting to other tips
+        // Tip-to-tip connections
         for (let j = i + 1; j < tips.length; j++) {
           const other = tips[j];
           const dx = tip.x - other.x;
           const dy = tip.y - other.y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-
-          if (dist < 3) {
-            // Connect tips with a node
-            const midX = (tip.x + other.x) / 2;
-            const midY = (tip.y + other.y) / 2;
-            const node = new Node(Math.round(midX), Math.round(midY));
+          if (Math.sqrt(dx * dx + dy * dy) < 2.5) {
+            const node = new Node((tip.x + other.x) / 2, (tip.y + other.y) / 2);
             node.char = CHARS.junction[Math.floor(Math.random() * CHARS.junction.length)];
             nodes.push(node);
-
-            // Remove both tips
             tips.splice(i, 1);
             tips.splice(j - 1, 1);
             break;
           }
         }
 
-        // Update tip position
         tip.update();
       }
 
       // Spawn new tips from motion
       if (motionSources.length > 0 && tips.length < CONFIG.maxTips) {
-        // Find nearest node to motion
         for (const source of motionSources) {
-          // Find closest node
+          // Find nearest node
           let closestNode = null;
           let closestDist = Infinity;
 
@@ -444,44 +511,42 @@
             }
           }
 
-          // Spawn tip from closest node toward motion
-          if (closestNode && closestDist > 5) {
+          // Spawn from nearest node
+          if (closestNode && closestDist > 4) {
             const angle = Math.atan2(source.y - closestNode.y, source.x - closestNode.x);
-            if (Math.random() < 0.15) {
+            if (Math.random() < 0.12) {
               tips.push(new Tip(closestNode.x, closestNode.y, angle));
             }
           }
 
-          // Also spawn from existing tips if they're far from motion
+          // Also spawn from existing tips reaching toward motion
           for (const tip of tips) {
             const dx = source.x - tip.x;
             const dy = source.y - tip.y;
             const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist > 15 && Math.random() < 0.08) {
+            if (dist > 12 && Math.random() < 0.06) {
               tips.push(new Tip(tip.x, tip.y, Math.atan2(dy, dx)));
             }
           }
         }
       }
 
-      // Ambient growth (when no motion)
-      if (motionSources.length === 0 && tips.length < 5 && Math.random() < CONFIG.ambientDrift) {
+      // Ambient growth when no motion
+      if (motionSources.length === 0 && tips.length < 6 && Math.random() < CONFIG.ambientDrift) {
         if (nodes.length > 0) {
           const node = nodes[Math.floor(Math.random() * nodes.length)];
-          const angle = Math.random() * Math.PI * 2;
-          tips.push(new Tip(node.x, node.y, angle));
+          tips.push(new Tip(node.x, node.y, Math.random() * Math.PI * 2));
         }
       }
 
-      // Enforce node limit
+      // Prune old nodes
       while (nodes.length > CONFIG.maxNodes) {
-        // Remove oldest dormant nodes
-        let oldest = null;
         let oldestIdx = -1;
+        let oldestAge = 0;
         for (let i = 0; i < nodes.length; i++) {
-          if (!nodes[i].isRoot && nodes[i].dormantFrames > 50) {
-            if (!oldest || nodes[i].age > oldest.age) {
-              oldest = nodes[i];
+          if (!nodes[i].isRoot && nodes[i].dormantFrames > 60) {
+            if (nodes[i].age > oldestAge) {
+              oldestAge = nodes[i].age;
               oldestIdx = i;
             }
           }
@@ -498,7 +563,6 @@
     // RENDERING
     // ========================================
     function render() {
-      // Create grid
       const grid = [];
       for (let y = 0; y < CONFIG.rows; y++) {
         grid[y] = [];
@@ -512,55 +576,38 @@
         const x = Math.round(node.x);
         const y = Math.round(node.y);
         if (x >= 0 && x < CONFIG.cols && y >= 0 && y < CONFIG.rows) {
-          grid[y][x] = { char: node.char, opacity: node.opacity };
+          const existing = grid[y][x];
+          if (existing.opacity < node.opacity || existing.char === ' ') {
+            grid[y][x] = { char: node.char, opacity: node.opacity };
+          }
         }
       }
 
-      // Place tips (on top)
+      // Place tips
       for (const tip of tips) {
         const x = Math.round(tip.x);
         const y = Math.round(tip.y);
         if (x >= 0 && x < CONFIG.cols && y >= 0 && y < CONFIG.rows) {
           grid[y][x] = { char: tip.char, opacity: 1 };
         }
-      }
 
-      // Draw connections
-      for (let y = 0; y < CONFIG.rows; y++) {
-        for (let x = 1; x < CONFIG.cols; x++) {
-          const cell = grid[y][x];
-          const prev = grid[y][x - 1];
-          if (cell.opacity > 0.3 && prev.opacity > 0.3) {
-            // Horizontal connection
-            const connChar = '-';
-            if (grid[y][x - 1].char === ' ') {
-              grid[y][x - 1] = { char: connChar, opacity: 0.4 };
-            }
+        // Draw connection trail behind tip
+        const trailX = Math.round(tip.x - Math.cos(tip.angle) * 1.5);
+        const trailY = Math.round(tip.y - Math.sin(tip.angle) * 1.5);
+        if (trailX >= 0 && trailX < CONFIG.cols && trailY >= 0 && trailY < CONFIG.rows) {
+          if (grid[trailY][trailX].char === ' ') {
+            grid[trailY][trailX] = { char: '·', opacity: 0.7 };
           }
         }
       }
 
-      for (let y = 1; y < CONFIG.rows; y++) {
-        for (let x = 0; x < CONFIG.cols; x++) {
-          const cell = grid[y][x];
-          const prev = grid[y - 1][x];
-          if (cell.opacity > 0.3 && prev.opacity > 0.3) {
-            // Vertical connection
-            if (grid[y - 1][x].char === ' ') {
-              grid[y - 1][x] = { char: '|', opacity: 0.4 };
-            }
-          }
-        }
-      }
-
-      // Build HTML string
+      // Build HTML
       let html = '';
       for (let y = 0; y < CONFIG.rows; y++) {
         for (let x = 0; x < CONFIG.cols; x++) {
           const cell = grid[y][x];
-          const color = cell.opacity < 1 ?
-            `hsl(0, 0%, ${30 + cell.opacity * 60}%)` : '#000000';
-          html += `<span style="color: ${color}; opacity: ${cell.opacity}">${cell.char}</span>`;
+          const gray = Math.round(30 + cell.opacity * 70);
+          html += `<span style="color: hsl(0, 0%, ${gray}%)">${cell.char}</span>`;
         }
         html += '\n';
       }
@@ -571,47 +618,39 @@
     // ========================================
     // ANIMATION LOOP
     // ========================================
-    function animate(timestamp) {
-      const delta = timestamp - lastFrameTime;
-      lastFrameTime = timestamp;
+    function animate() {
       frameCount++;
 
-      // Process webcam every 3 frames
-      if (frameCount % 3 === 0) {
+      if (frameCount % 2 === 0) {
         processWebcam();
       }
 
-      // Update network
       updateNetwork();
-
-      // Render
       render();
 
       requestAnimationFrame(animate);
     }
 
     // ========================================
-    // WINDOW RESIZE
+    // RESIZE
     // ========================================
     function handleResize() {
       const charWidth = canvasEl.clientWidth / CONFIG.cols;
       const charHeight = canvasEl.clientHeight / CONFIG.rows;
-      const fontSize = Math.min(charWidth, charHeight * 1.2);
+      const fontSize = Math.min(charWidth, charHeight * 1.3);
       canvasEl.style.fontSize = `${fontSize}px`;
     }
 
     window.addEventListener('resize', handleResize);
 
     // ========================================
-    // INITIALIZATION
+    // INIT
     // ========================================
     async function init() {
       initNetwork();
       handleResize();
-
       await initWebcam();
-
-      requestAnimationFrame(animate);
+      animate();
     }
 
     init();
