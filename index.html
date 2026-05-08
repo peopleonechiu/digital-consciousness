@@ -114,21 +114,24 @@
     const CONFIG = {
       cols: 90,
       rows: 50,
-      growthRate: 1.5,
-      branchProbability: 0.10,
-      maxTips: 30,
-      maxNodes: 400,
-      motionThreshold: 12,
-      motionSmoothingFrames: 5,
-      dormantThreshold: 240,
-      ambientDrift: 0.03
+      growthRate: 2.5,        // Faster growth
+      branchProbability: 0.08,
+      maxTips: 40,
+      maxNodes: 500,
+      motionThreshold: 8,      // Lower = more sensitive
+      motionSmoothingFrames: 3,
+      dormantThreshold: 300,
+      ambientDrift: 0.01,
+      trailDecay: 0.92,       // Trail persistence
+      motionBoost: 2.0        // Speed boost when tracking motion
     };
 
     const CHARS = {
-      dormant: ['.', '·', ':', '˙', ','],
-      established: ['-', '|', '+', '\\', '/', 'x', '=', '~'],
-      active: ['@', '#', '*', '█', '▓', '▒'],
-      junction: ['○', '◉', '◎', '⊕', '⊙']
+      dormant: ['.', '·', ':', '˙', ',', '`'],
+      established: ['-', '|', '+', '\\', '/', 'x', '=', '~', '^', 'v', '<', '>'],
+      active: ['@', '#', '*', '█', '▓', '▒', '◆', '●'],
+      junction: ['○', '◉', '◎', '⊕', '⊙', '◈'],
+      trail: ['·', '∙', '◦', '•']
     };
 
     // ========================================
@@ -209,9 +212,12 @@
         this.depth = depth;
         this.speed = CONFIG.growthRate * (0.7 + Math.random() * 0.6);
         this.wobbleOffset = Math.random() * Math.PI * 2;
-        this.wobbleSpeed = 0.05 + Math.random() * 0.05;
+        this.wobbleSpeed = 0.08 + Math.random() * 0.08;
         this.char = this.randomChar('active');
         this.life = 0;
+        this.lastX = x;
+        this.lastY = y;
+        this.trail = [];  // Store trail positions
       }
 
       randomChar(type) {
@@ -221,10 +227,29 @@
 
       update() {
         this.life++;
-        this.depth += this.speed;
 
-        // Organic wobble
-        const wobble = Math.sin(this.life * this.wobbleSpeed + this.wobbleOffset) * 0.25;
+        // Store trail position
+        this.trail.push({ x: this.x, y: this.y, age: 0 });
+        if (this.trail.length > 20) this.trail.shift();
+        for (const t of this.trail) t.age++;
+
+        // Calculate speed - faster when tracking
+        let speedMult = 1.0;
+        if (motionSources.length > 0) {
+          const nearest = this.findNearestMotion();
+          if (nearest) {
+            const dx = nearest.x - this.x;
+            const dy = nearest.y - this.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < 30) speedMult = CONFIG.motionBoost; // Boost when close
+          }
+        }
+
+        this.depth += this.speed * speedMult;
+
+        // Organic wobble (less when tracking)
+        const wobbleStrength = motionSources.length > 0 ? 0.1 : 0.25;
+        const wobble = Math.sin(this.life * this.wobbleSpeed + this.wobbleOffset) * wobbleStrength;
 
         // Target angle toward motion
         let targetAngle = wobble;
@@ -234,7 +259,7 @@
             const dx = nearest.x - this.x;
             const dy = nearest.y - this.y;
             const target = Math.atan2(dy, dx);
-            targetAngle = target + wobble;
+            targetAngle = target + wobble * 0.3;
           }
         }
 
@@ -244,9 +269,11 @@
         while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
         this.angle += angleDiff * 0.1;
 
-        // Move
-        this.x += Math.cos(this.angle) * this.speed;
-        this.y += Math.sin(this.angle) * this.speed;
+        // Move with speed multiplier
+        this.lastX = this.x;
+        this.lastY = this.y;
+        this.x += Math.cos(this.angle) * this.speed * speedMult;
+        this.y += Math.sin(this.angle) * this.speed * speedMult;
 
         // Random character mutation
         if (Math.random() < 0.08) {
@@ -273,21 +300,29 @@
         }
       }
 
-      findNearestMotion() {
-        if (motionSources.length === 0) return null;
-        let nearest = null;
-        let nearestDist = Infinity;
-        for (const source of motionSources) {
-          const dx = source.x - this.x;
-          const dy = source.y - this.y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          if (dist < nearestDist) {
-            nearestDist = dist;
-            nearest = source;
-          }
+      // Find nearest motion source
+      let nearestMotion = null;
+      let nearestDist = Infinity;
+
+      for (const source of motionSources) {
+        const dx = source.x - this.x;
+        const dy = source.y - this.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < nearestDist) {
+          nearestDist = dist;
+          nearestMotion = source;
         }
-        return nearest;
       }
+
+      if (nearestMotion) {
+        const dx = nearestMotion.x - this.x;
+        const dy = nearestMotion.y - this.y;
+        const target = Math.atan2(dy, dx);
+        targetAngle = target;
+      }
+
+      return nearestMotion;
+    }
 
       shouldBranch() {
         return Math.random() < CONFIG.branchProbability &&
@@ -297,7 +332,12 @@
       }
 
       isMature() {
-        return this.depth > 150 + Math.random() * 80;
+        // Mature faster when tracking motion
+        const baseMaturity = 120 + Math.random() * 60;
+        if (motionSources.length > 0) {
+          return this.depth > baseMaturity * 0.7;
+        }
+        return this.depth > baseMaturity;
       }
     }
 
@@ -583,21 +623,25 @@
         }
       }
 
-      // Place tips
+      // Place tips with trails
       for (const tip of tips) {
+        // Draw trail
+        for (const t of tip.trail) {
+          const tx = Math.round(t.x);
+          const ty = Math.round(t.y);
+          if (tx >= 0 && tx < CONFIG.cols && ty >= 0 && ty < CONFIG.rows) {
+            const fade = Math.max(0.1, 1 - t.age / 25);
+            if (grid[ty][tx].char === ' ') {
+              const trailChars = CHARS.trail;
+              grid[ty][tx] = { char: trailChars[Math.min(t.age % trailChars.length, trailChars.length - 1)], opacity: fade * 0.6 };
+            }
+          }
+        }
+
         const x = Math.round(tip.x);
         const y = Math.round(tip.y);
         if (x >= 0 && x < CONFIG.cols && y >= 0 && y < CONFIG.rows) {
           grid[y][x] = { char: tip.char, opacity: 1 };
-        }
-
-        // Draw connection trail behind tip
-        const trailX = Math.round(tip.x - Math.cos(tip.angle) * 1.5);
-        const trailY = Math.round(tip.y - Math.sin(tip.angle) * 1.5);
-        if (trailX >= 0 && trailX < CONFIG.cols && trailY >= 0 && trailY < CONFIG.rows) {
-          if (grid[trailY][trailX].char === ' ') {
-            grid[trailY][trailX] = { char: '·', opacity: 0.7 };
-          }
         }
       }
 
@@ -606,7 +650,11 @@
       for (let y = 0; y < CONFIG.rows; y++) {
         for (let x = 0; x < CONFIG.cols; x++) {
           const cell = grid[y][x];
-          const gray = Math.round(30 + cell.opacity * 70);
+          let gray = Math.round(30 + cell.opacity * 70);
+          // Make active tips darker/black
+          if (cell.char === '@' || cell.char === '#' || cell.char === '█') {
+            gray = 0;
+          }
           html += `<span style="color: hsl(0, 0%, ${gray}%)">${cell.char}</span>`;
         }
         html += '\n';
