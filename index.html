@@ -24,8 +24,8 @@
       height: 100%;
       display: block;
       white-space: pre;
-      line-height: 1.1;
-      font-size: clamp(10px, 1.5vw, 16px);
+      line-height: 1.2;
+      font-size: clamp(9px, 1.2vw, 14px);
       color: #000000;
       user-select: none;
       cursor: crosshair;
@@ -35,16 +35,11 @@
       position: fixed;
       bottom: 20px;
       right: 20px;
-      width: 200px;
+      width: 180px;
       border: 2px solid #000;
       background: #000;
       z-index: 1000;
       opacity: 0.85;
-      transition: opacity 0.3s;
-    }
-
-    #webcam-container:hover {
-      opacity: 1;
     }
 
     #webcam-container.hidden {
@@ -61,23 +56,16 @@
       position: fixed;
       bottom: 20px;
       right: 20px;
-      width: 40px;
-      height: 40px;
+      width: 36px;
+      height: 36px;
       background: #fff;
       border: 2px solid #000;
       cursor: pointer;
-      font-family: 'Courier New', monospace;
-      font-size: 14px;
-      font-weight: bold;
+      font-size: 16px;
       z-index: 1001;
       display: flex;
       align-items: center;
       justify-content: center;
-      transition: background 0.2s;
-    }
-
-    #toggle-btn:hover {
-      background: #f0f0f0;
     }
 
     #toggle-btn.active {
@@ -89,584 +77,456 @@
       position: fixed;
       top: 20px;
       left: 20px;
-      font-size: 14px;
+      font-size: 13px;
       color: #333;
-      pointer-events: none;
-      z-index: 100;
-      background: rgba(255,255,255,0.9);
-      padding: 10px 15px;
+      background: rgba(255,255,255,0.95);
+      padding: 10px 16px;
       border: 1px solid #ccc;
+      z-index: 100;
     }
   </style>
 </head>
 <body>
-  <div id="overlay">Initializing...</div>
-
-  <button id="toggle-btn" title="Toggle webcam preview">📷</button>
-
-  <div id="webcam-container">
+  <div id="overlay">Click to enable webcam</div>
+  <button id="toggle-btn">📷</button>
+  <div id="webcam-container" class="hidden">
     <video id="webcam" autoplay playsinline muted></video>
   </div>
-
   <div id="canvas"></div>
 
   <script>
     // ========================================
-    // CONFIGURATION
+    // CONFIG
     // ========================================
     const CONFIG = {
-      cols: 90,
-      rows: 50,
-      growthRate: 2.5,        // Faster growth
-      branchProbability: 0.08,
-      maxTips: 40,
-      maxNodes: 500,
-      motionThreshold: 8,      // Lower = more sensitive
-      motionSmoothingFrames: 3,
-      dormantThreshold: 300,
-      ambientDrift: 0.01,
-      trailDecay: 0.92,       // Trail persistence
-      motionBoost: 2.0        // Speed boost when tracking motion
+      cols: 100,
+      rows: 55,
+      baseSpeed: 0.4,          // Slow base movement
+      trackSpeed: 1.2,         // Faster when tracking
+      turnRate: 0.04,          // Smooth turning
+      wobbleAmount: 0.08,      // Gentle wobble
+      branchChance: 0.03,       // Low branching
+      maxFibers: 15,           // Limited fibers
+      trailLength: 25,          // Longer trails
+      lineFadeSpeed: 0.015,    // Slow fade
+      motionThreshold: 20,
+      sensorSize: 14           // Larger detection blocks
     };
 
+    // ASCII characters - elegant set
     const CHARS = {
-      dormant: ['.', '·', ':', '˙', ',', '`'],
-      established: ['-', '|', '+', '\\', '/', 'x', '=', '~', '^', 'v', '<', '>'],
-      active: ['@', '#', '*', '█', '▓', '▒', '◆', '●'],
-      junction: ['○', '◉', '◎', '⊕', '⊙', '◈'],
-      trail: ['·', '∙', '◦', '•']
+      tip: ['✦', '✧', '∗', '•', '◦', '∘'],
+      node: ['○', '◌', '◎', '●'],
+      line: ['─', '│', '┌', '┐', '└', '┘', '├', '┤', '┬', '┴', '┼', '─', '│'],
+      trail: ['·', '∙', '◦', '・'],
+      motion: ['◉', '◎', '○']
     };
 
     // ========================================
     // STATE
     // ========================================
-    let nodes = [];
-    let tips = [];
-    let motionHistory = [];
-    let motionSources = [];
-    let frameCount = 0;
-    let webcamActive = false;
-
-    // ========================================
-    // DOM ELEMENTS
-    // ========================================
-    const webcamEl = document.getElementById('webcam');
-    const canvasEl = document.getElementById('canvas');
-    const overlayEl = document.getElementById('overlay');
-    const toggleBtn = document.getElementById('toggle-btn');
-    const webcamContainer = document.getElementById('webcam-container');
-
+    let fibers = [];           // Growing fiber tips
+    let nodes = [];            // Established nodes/joints
+    let connections = [];      // Lines between nodes
+    let trails = [];           // Trail points
+    let motionTarget = null;   // Current motion center
+    let motionIntensity = 0;
+    let webcamReady = false;
+    let lastFrame = null;
     let hiddenCanvas, hiddenCtx;
 
     // ========================================
-    // TOGGLE WEBCAM PREVIEW
+    // DOM
+    // ========================================
+    const canvas = document.getElementById('canvas');
+    const webcam = document.getElementById('webcam');
+    const overlay = document.getElementById('overlay');
+    const toggleBtn = document.getElementById('toggle-btn');
+    const webcamContainer = document.getElementById('webcam-container');
+
+    // ========================================
+    // WEBCAM
     // ========================================
     toggleBtn.addEventListener('click', () => {
       webcamContainer.classList.toggle('hidden');
       toggleBtn.classList.toggle('active');
     });
 
-    // ========================================
-    // NODE CLASS
-    // ========================================
-    class Node {
-      constructor(x, y, isRoot = false) {
-        this.x = x;
-        this.y = y;
-        this.isRoot = isRoot;
-        this.dormantFrames = 0;
-        this.char = this.randomChar('established');
-        this.opacity = 1;
-        this.age = 0;
-      }
-
-      randomChar(type) {
-        const chars = CHARS[type] || CHARS.dormant;
-        return chars[Math.floor(Math.random() * chars.length)];
-      }
-
-      update() {
-        this.age++;
-        if (motionSources.length === 0) {
-          this.dormantFrames++;
-          const fade = Math.min(1, this.dormantFrames / CONFIG.dormantThreshold);
-          this.opacity = Math.max(0.25, 1 - fade * 0.75);
-          if (this.dormantFrames > 30) {
-            this.char = this.randomChar('dormant');
-          }
-        } else {
-          this.dormantFrames = 0;
-          this.opacity = Math.min(1, this.opacity + 0.08);
-          if (this.age > 80 && this.age % 20 === 0) {
-            this.char = this.randomChar('established');
-          }
-        }
-      }
-    }
-
-    // ========================================
-    // TIP CLASS (Growing neural fiber)
-    // ========================================
-    class Tip {
-      constructor(x, y, angle = null, depth = 0) {
-        this.x = x;
-        this.y = y;
-        this.angle = angle !== null ? angle : Math.random() * Math.PI * 2;
-        this.depth = depth;
-        this.speed = CONFIG.growthRate * (0.7 + Math.random() * 0.6);
-        this.wobbleOffset = Math.random() * Math.PI * 2;
-        this.wobbleSpeed = 0.08 + Math.random() * 0.08;
-        this.char = this.randomChar('active');
-        this.life = 0;
-        this.lastX = x;
-        this.lastY = y;
-        this.trail = [];  // Store trail positions
-      }
-
-      randomChar(type) {
-        const chars = CHARS[type] || CHARS.active;
-        return chars[Math.floor(Math.random() * chars.length)];
-      }
-
-      update() {
-        this.life++;
-
-        // Store trail position
-        this.trail.push({ x: this.x, y: this.y, age: 0 });
-        if (this.trail.length > 20) this.trail.shift();
-        for (const t of this.trail) t.age++;
-
-        // Calculate speed - faster when tracking
-        let speedMult = 1.0;
-        if (motionSources.length > 0) {
-          const nearest = this.findNearestMotion();
-          if (nearest) {
-            const dx = nearest.x - this.x;
-            const dy = nearest.y - this.y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist < 30) speedMult = CONFIG.motionBoost; // Boost when close
-          }
-        }
-
-        this.depth += this.speed * speedMult;
-
-        // Organic wobble (less when tracking)
-        const wobbleStrength = motionSources.length > 0 ? 0.1 : 0.25;
-        const wobble = Math.sin(this.life * this.wobbleSpeed + this.wobbleOffset) * wobbleStrength;
-
-        // Target angle toward motion
-        let targetAngle = wobble;
-        if (motionSources.length > 0) {
-          const nearest = this.findNearestMotion();
-          if (nearest) {
-            const dx = nearest.x - this.x;
-            const dy = nearest.y - this.y;
-            const target = Math.atan2(dy, dx);
-            targetAngle = target + wobble * 0.3;
-          }
-        }
-
-        // Smooth angle transition
-        let angleDiff = targetAngle - this.angle;
-        while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
-        while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
-        this.angle += angleDiff * 0.1;
-
-        // Move with speed multiplier
-        this.lastX = this.x;
-        this.lastY = this.y;
-        this.x += Math.cos(this.angle) * this.speed * speedMult;
-        this.y += Math.sin(this.angle) * this.speed * speedMult;
-
-        // Random character mutation
-        if (Math.random() < 0.08) {
-          this.char = this.randomChar('active');
-        }
-
-        // Boundary handling
-        const margin = 3;
-        if (this.x < margin) {
-          this.angle = Math.PI - this.angle + (Math.random() - 0.5) * 0.5;
-          this.x = margin;
-        }
-        if (this.x >= CONFIG.cols - margin) {
-          this.angle = Math.PI - this.angle + (Math.random() - 0.5) * 0.5;
-          this.x = CONFIG.cols - margin - 1;
-        }
-        if (this.y < margin) {
-          this.angle = -this.angle + (Math.random() - 0.5) * 0.5;
-          this.y = margin;
-        }
-        if (this.y >= CONFIG.rows - margin) {
-          this.angle = -this.angle + (Math.random() - 0.5) * 0.5;
-          this.y = CONFIG.rows - margin - 1;
-        }
-      }
-
-      findNearestMotion() {
-        if (motionSources.length === 0) return null;
-        
-        let nearestMotion = null;
-        let nearestDist = Infinity;
-
-        for (const source of motionSources) {
-          const dx = source.x - this.x;
-          const dy = source.y - this.y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          if (dist < nearestDist) {
-            nearestDist = dist;
-            nearestMotion = source;
-          }
-        }
-
-        return nearestMotion;
-      }
-
-      shouldBranch() {
-        return Math.random() < CONFIG.branchProbability &&
-               this.depth > 8 &&
-               this.depth < 100 &&
-               this.life > 20;
-      }
-
-      isMature() {
-        // Mature faster when tracking motion
-        const baseMaturity = 120 + Math.random() * 60;
-        if (motionSources.length > 0) {
-          return this.depth > baseMaturity * 0.7;
-        }
-        return this.depth > baseMaturity;
-      }
-    }
-
-    // ========================================
-    // WEBCAM PROCESSOR
-    // ========================================
     async function initWebcam() {
-      console.log('initWebcam called');
-      
       try {
-        console.log('Requesting getUserMedia...');
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user' }
+          video: { facingMode: 'user', width: 320, height: 240 }
         });
-        console.log('getUserMedia succeeded, stream:', stream);
-        webcamEl.srcObject = stream;
+        webcam.srcObject = stream;
+        await webcam.play();
 
-        // play() might fail if already playing
-        try {
-          await webcamEl.play();
-        } catch (e) {
-          console.log('play() failed, trying to continue anyway:', e);
-        }
+        hiddenCanvas = document.createElement('canvas');
+        hiddenCanvas.width = 80;
+        hiddenCanvas.height = 60;
+        hiddenCtx = hiddenCanvas.getContext('2d', { willReadFrequently: true });
 
-        setupWebcamCanvas();
+        webcamReady = true;
+        overlay.textContent = 'Move slowly to grow fibers';
+        toggleBtn.classList.add('active');
         return true;
-        
-      } catch (err) {
-        console.warn('Webcam error:', err);
-        overlayEl.textContent = 'Click anywhere to enable webcam';
-        document.body.addEventListener('click', requestWebcam, { once: true });
-        document.body.addEventListener('touchstart', requestWebcam, { once: true });
+      } catch (e) {
+        overlay.textContent = 'Webcam unavailable';
         return false;
       }
     }
 
-    function setupWebcamCanvas() {
-      console.log('Setting up webcam canvas');
-      hiddenCanvas = document.createElement('canvas');
-      hiddenCanvas.width = 160;
-      hiddenCanvas.height = 120;
-      hiddenCtx = hiddenCanvas.getContext('2d', { willReadFrequently: true });
-      webcamActive = true;
-      overlayEl.textContent = 'Move to grow neural fibers';
-      toggleBtn.classList.add('active');
-    }
+    function detectMotion() {
+      if (!webcamReady || webcam.readyState < 2) return;
 
-    async function requestWebcam() {
-      console.log('requestWebcam called');
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user' }
-        });
-        webcamEl.srcObject = stream;
-        await webcamEl.play();
-        setupWebcamCanvas();
-      } catch (err) {
-        console.warn('Webcam error:', err);
-        overlayEl.textContent = 'Webcam unavailable';
-      }
-    }
-
-    function processWebcam() {
-      if (!webcamActive || !webcamEl.readyState || webcamEl.readyState < 2) return;
-
-      hiddenCtx.drawImage(webcamEl, 0, 0, 160, 120);
-      const frame = hiddenCtx.getImageData(0, 0, 160, 120);
+      hiddenCtx.drawImage(webcam, 0, 0, 80, 60);
+      const frame = hiddenCtx.getImageData(0, 0, 80, 60);
       const data = frame.data;
 
-      // Detect motion blocks
-      const motionPoints = [];
-      const blockSize = 12;
+      if (!lastFrame) {
+        lastFrame = new Uint8Array(data.length);
+        lastFrame.set(data);
+        return;
+      }
 
-      for (let by = 0; by < 120; by += blockSize) {
-        for (let bx = 0; bx < 160; bx += blockSize) {
+      let totalMotion = 0;
+      let motionX = 0;
+      let motionY = 0;
+      let count = 0;
+
+      const block = CONFIG.sensorSize;
+
+      for (let by = 0; by < 60; by += block) {
+        for (let bx = 0; bx < 80; bx += block) {
           let blockMotion = 0;
-          let count = 0;
 
-          for (let y = by; y < by + blockSize && y < 120; y++) {
-            for (let x = bx; x < bx + blockSize && x < 160; x++) {
-              const i = (y * 160 + x) * 4;
-              const brightness = (data[i] + data[i + 1] + data[i + 2]) / 3;
-
-              if (motionHistory.length > 0) {
-                const histKey = `${x >> 3}-${y >> 3}`;
-                const prev = motionHistory[motionHistory.length - 1].get(histKey);
-                if (prev !== undefined) {
-                  blockMotion += Math.abs(brightness - prev);
-                  count++;
-                }
-              }
+          for (let y = by; y < by + block && y < 60; y++) {
+            for (let x = bx; x < bx + block && x < 80; x++) {
+              const i = (y * 80 + x) * 4;
+              const diff = Math.abs(data[i] - lastFrame[i]) +
+                          Math.abs(data[i+1] - lastFrame[i+1]) +
+                          Math.abs(data[i+2] - lastFrame[i+2]);
+              blockMotion += diff;
             }
           }
 
-          if (count > 0 && blockMotion / count > CONFIG.motionThreshold) {
-            motionPoints.push({
-              x: bx / 160,
-              y: by / 120
-            });
+          if (blockMotion > CONFIG.motionThreshold * 10) {
+            motionX += bx;
+            motionY += by;
+            count++;
+            totalMotion += blockMotion;
           }
         }
       }
 
-      // Store brightness map
-      const brightnessMap = new Map();
-      for (let y = 0; y < 120; y += 8) {
-        for (let x = 0; x < 160; x += 8) {
-          const i = (y * 160 + x) * 4;
-          const brightness = (data[i] + data[i + 1] + data[i + 2]) / 3;
-          brightnessMap.set(`${x >> 3}-${y >> 3}`, brightness);
-        }
-      }
-      motionHistory.push(brightnessMap);
-      if (motionHistory.length > CONFIG.motionSmoothingFrames) {
-        motionHistory.shift();
-      }
+      lastFrame.set(data);
 
-      // Convert to canvas coordinates and cluster
-      const rawSources = motionPoints.map(pt => ({
-        x: pt.x * CONFIG.cols,
-        y: pt.y * CONFIG.rows
-      }));
+      // Smooth motion intensity
+      if (totalMotion > 0 && count > 0) {
+        const targetX = (motionX / count) / 80 * CONFIG.cols;
+        const targetY = (motionY / count) / 60 * CONFIG.rows;
 
-      // Cluster nearby points
-      if (rawSources.length > 0) {
-        const clustered = [];
-        const clusterDist = 10;
-
-        for (const source of rawSources) {
-          let merged = false;
-          for (const cluster of clustered) {
-            const dx = source.x - cluster.x;
-            const dy = source.y - cluster.y;
-            if (Math.sqrt(dx * dx + dy * dy) < clusterDist) {
-              cluster.x = cluster.x * 0.7 + source.x * 0.3;
-              cluster.y = cluster.y * 0.7 + source.y * 0.3;
-              cluster.weight = (cluster.weight || 1) + 1;
-              merged = true;
-              break;
-            }
-          }
-          if (!merged) {
-            clustered.push({ x: source.x, y: source.y, weight: 1 });
-          }
+        if (motionTarget) {
+          motionTarget.x += (targetX - motionTarget.x) * 0.3;
+          motionTarget.y += (targetY - motionTarget.y) * 0.3;
+        } else {
+          motionTarget = { x: targetX, y: targetY };
         }
 
-        motionSources = clustered
-          .sort((a, b) => b.weight - a.weight)
-          .slice(0, 6);
+        motionIntensity = Math.min(1, motionIntensity + 0.15);
       } else {
-        motionSources = [];
+        motionIntensity = Math.max(0, motionIntensity - 0.02);
       }
     }
 
     // ========================================
-    // NEURAL NETWORK
+    // FIBER (Growing tip)
     // ========================================
-    function initNetwork() {
+    class Fiber {
+      constructor(x, y, angle) {
+        this.x = x;
+        this.y = y;
+        this.angle = angle;
+        this.speed = CONFIG.baseSpeed;
+        this.trail = [];
+        this.age = 0;
+        this.maturity = 0;
+        this.connected = false;
+        this.running = false;  // Is actively tracking
+      }
+
+      update() {
+        this.age++;
+        this.maturity += 0.003;
+
+        // Store trail
+        this.trail.push({ x: this.x, y: this.y, age: 0 });
+        if (this.trail.length > CONFIG.trailLength) {
+          this.trail.shift();
+        }
+        for (const t of this.trail) t.age++;
+
+        // Determine speed based on tracking
+        let targetSpeed = CONFIG.baseSpeed;
+        let isRunning = false;
+
+        if (motionTarget && motionIntensity > 0.1) {
+          const dx = motionTarget.x - this.x;
+          const dy = motionTarget.y - this.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+
+          if (dist < 30) {
+            targetSpeed = CONFIG.trackSpeed;
+            isRunning = true;
+          }
+        }
+
+        this.running = isRunning;
+        this.speed += (targetSpeed - this.speed) * 0.05;
+
+        // Turn toward motion
+        if (motionTarget && motionIntensity > 0.05) {
+          const dx = motionTarget.x - this.x;
+          const dy = motionTarget.y - this.y;
+          const targetAngle = Math.atan2(dy, dx);
+
+          let diff = targetAngle - this.angle;
+          while (diff > Math.PI) diff -= Math.PI * 2;
+          while (diff < -Math.PI) diff += Math.PI * 2;
+
+          this.angle += diff * CONFIG.turnRate;
+        }
+
+        // Add gentle wobble
+        const wobble = Math.sin(this.age * 0.03) * CONFIG.wobbleAmount;
+        this.angle += wobble;
+
+        // Move
+        this.x += Math.cos(this.angle) * this.speed;
+        this.y += Math.sin(this.angle) * this.speed;
+
+        // Boundary - gentle bounce
+        const m = 5;
+        if (this.x < m) { this.x = m; this.angle = Math.PI - this.angle + (Math.random() - 0.5) * 0.5; }
+        if (this.x > CONFIG.cols - m) { this.x = CONFIG.cols - m; this.angle = Math.PI - this.angle + (Math.random() - 0.5) * 0.5; }
+        if (this.y < m) { this.y = m; this.angle = -this.angle + (Math.random() - 0.5) * 0.5; }
+        if (this.y > CONFIG.rows - m) { this.y = CONFIG.rows - m; this.angle = -this.angle + (Math.random() - 0.5) * 0.5; }
+      }
+
+      isMature() {
+        return this.maturity > 1 || this.age > 800;
+      }
+    }
+
+    // ========================================
+    // NODE (Joint)
+    // ========================================
+    class Node {
+      constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.opacity = 0.8;
+        this.char = CHARS.node[Math.floor(Math.random() * CHARS.node.length)];
+      }
+    }
+
+    // ========================================
+    // CONNECTION (Line segment)
+    // ========================================
+    class Connection {
+      constructor(x1, y1, x2, y2) {
+        this.x1 = x1;
+        this.y1 = y1;
+        this.x2 = x2;
+        this.y2 = y2;
+        this.opacity = 0.5;
+        this.age = 0;
+      }
+    }
+
+    // ========================================
+    // INIT
+    // ========================================
+    function init() {
+      // Start with a few seed fibers
       const cx = CONFIG.cols / 2;
       const cy = CONFIG.rows / 2;
 
-      // Create root nodes in a triangle formation
-      const roots = [
-        [cx, cy],
-        [cx - 15, cy - 8],
-        [cx + 15, cy - 8],
-        [cx - 8, cy + 12],
-        [cx + 8, cy + 12]
-      ];
-
-      for (const [x, y] of roots) {
-        nodes.push(new Node(x, y, true));
+      const angles = [0, Math.PI * 0.5, Math.PI, Math.PI * 1.5];
+      for (const a of angles) {
+        fibers.push(new Fiber(cx, cy, a));
       }
 
-      // Initial growth tips
-      const angles = [0, Math.PI * 0.4, Math.PI * 0.8, Math.PI * 1.2, Math.PI * 1.6];
-      for (let i = 0; i < angles.length; i++) {
-        tips.push(new Tip(roots[i % roots.length][0], roots[i % roots.length][1], angles[i]));
-      }
+      handleResize();
+      initWebcam();
+      requestAnimationFrame(animate);
     }
 
-    function updateNetwork() {
-      // Update nodes
-      for (const node of nodes) {
-        node.update();
+    // ========================================
+    // UPDATE
+    // ========================================
+    function update() {
+      detectMotion();
+
+      // Update fibers
+      for (let i = fibers.length - 1; i >= 0; i--) {
+        const f = fibers[i];
+        f.update();
+
+        // Mature into node
+        if (f.isMature()) {
+          nodes.push(new Node(f.x, f.y));
+
+          // Keep a few mature fibers as "living"
+          if (fibers.length > 5) {
+            fibers.splice(i, 1);
+          }
+        }
+
+        // Occasional branching
+        if (f.age > 100 && f.age % 200 === 0 && fibers.length < CONFIG.maxFibers && Math.random() < CONFIG.branchChance * 10) {
+          const branchAngle = f.angle + (Math.random() > 0.5 ? 0.5 : -0.5);
+          fibers.push(new Fiber(f.x, f.y, branchAngle));
+        }
       }
 
-      // Process tips
-      for (let i = tips.length - 1; i >= 0; i--) {
-        const tip = tips[i];
-
-        // Convert mature tips to nodes
-        if (tip.isMature()) {
-          const node = new Node(Math.round(tip.x), Math.round(tip.y));
-          nodes.push(node);
-          tips.splice(i, 1);
-          continue;
-        }
-
-        // Branching
-        if (tip.shouldBranch() && tips.length < CONFIG.maxTips) {
-          const branchAngle = tip.angle + (Math.random() > 0.5 ? 0.6 : -0.6);
-          tips.push(new Tip(tip.x, tip.y, branchAngle, 0));
-        }
-
-        // Tip-to-tip connections
-        for (let j = i + 1; j < tips.length; j++) {
-          const other = tips[j];
-          const dx = tip.x - other.x;
-          const dy = tip.y - other.y;
-          if (Math.sqrt(dx * dx + dy * dy) < 2.5) {
-            const node = new Node((tip.x + other.x) / 2, (tip.y + other.y) / 2);
-            node.char = CHARS.junction[Math.floor(Math.random() * CHARS.junction.length)];
-            nodes.push(node);
-            tips.splice(i, 1);
-            tips.splice(j - 1, 1);
-            break;
+      // Spawn new fiber from node toward motion
+      if (motionTarget && motionIntensity > 0.3 && fibers.length < CONFIG.maxFibers) {
+        if (Math.random() < 0.02) {
+          // Pick a random existing node
+          if (nodes.length > 0) {
+            const node = nodes[Math.floor(Math.random() * nodes.length)];
+            const angle = Math.atan2(motionTarget.y - node.y, motionTarget.x - node.x);
+            fibers.push(new Fiber(node.x, node.y, angle));
           }
         }
-
-        tip.update();
       }
 
-      // Spawn new tips from motion
-      if (motionSources.length > 0 && tips.length < CONFIG.maxTips) {
-        for (const source of motionSources) {
-          // Find nearest node
-          let closestNode = null;
-          let closestDist = Infinity;
+      // Keep connections updated between nearby fibers/nodes
+      for (const f of fibers) {
+        for (const n of nodes) {
+          const dx = f.x - n.x;
+          const dy = f.y - n.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
 
-          for (const node of nodes) {
-            const dx = node.x - source.x;
-            const dy = node.y - source.y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist < closestDist) {
-              closestDist = dist;
-              closestNode = node;
-            }
-          }
+          if (dist < 8 && dist > 1) {
+            // Create connection
+            const exists = connections.some(c =>
+              (c.x1 === n.x && c.y1 === n.y && c.x2 === f.x && c.y2 === f.y) ||
+              (c.x1 === f.x && c.y1 === f.y && c.x2 === n.x && c.y2 === n.y)
+            );
 
-          // Spawn from nearest node
-          if (closestNode && closestDist > 4) {
-            const angle = Math.atan2(source.y - closestNode.y, source.x - closestNode.x);
-            if (Math.random() < 0.12) {
-              tips.push(new Tip(closestNode.x, closestNode.y, angle));
-            }
-          }
-
-          // Also spawn from existing tips reaching toward motion
-          for (const tip of tips) {
-            const dx = source.x - tip.x;
-            const dy = source.y - tip.y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist > 12 && Math.random() < 0.06) {
-              tips.push(new Tip(tip.x, tip.y, Math.atan2(dy, dx)));
+            if (!exists) {
+              connections.push(new Connection(n.x, n.y, f.x, f.y));
             }
           }
         }
       }
 
-      // Ambient growth when no motion
-      if (motionSources.length === 0 && tips.length < 6 && Math.random() < CONFIG.ambientDrift) {
-        if (nodes.length > 0) {
-          const node = nodes[Math.floor(Math.random() * nodes.length)];
-          tips.push(new Tip(node.x, node.y, Math.random() * Math.PI * 2));
-        }
-      }
-
-      // Prune old nodes
-      while (nodes.length > CONFIG.maxNodes) {
-        let oldestIdx = -1;
-        let oldestAge = 0;
-        for (let i = 0; i < nodes.length; i++) {
-          if (!nodes[i].isRoot && nodes[i].dormantFrames > 60) {
-            if (nodes[i].age > oldestAge) {
-              oldestAge = nodes[i].age;
-              oldestIdx = i;
-            }
-          }
-        }
-        if (oldestIdx >= 0) {
-          nodes.splice(oldestIdx, 1);
-        } else {
-          break;
+      // Fade connections
+      for (let i = connections.length - 1; i >= 0; i--) {
+        connections[i].age++;
+        connections[i].opacity = Math.max(0.1, 0.5 - connections[i].age * CONFIG.lineFadeSpeed);
+        if (connections[i].opacity <= 0.1) {
+          connections.splice(i, 1);
         }
       }
     }
 
     // ========================================
-    // RENDERING
+    // RENDER
     // ========================================
     function render() {
       const grid = [];
+
       for (let y = 0; y < CONFIG.rows; y++) {
         grid[y] = [];
         for (let x = 0; x < CONFIG.cols; x++) {
-          grid[y][x] = { char: ' ', opacity: 0 };
+          grid[y][x] = { char: ' ', opacity: 0, bold: false };
         }
       }
 
-      // Place nodes
-      for (const node of nodes) {
-        const x = Math.round(node.x);
-        const y = Math.round(node.y);
-        if (x >= 0 && x < CONFIG.cols && y >= 0 && y < CONFIG.rows) {
-          const existing = grid[y][x];
-          if (existing.opacity < node.opacity || existing.char === ' ') {
-            grid[y][x] = { char: node.char, opacity: node.opacity };
+      // Draw connections as lines
+      for (const c of connections) {
+        const x1 = Math.round(c.x1);
+        const y1 = Math.round(c.y1);
+        const x2 = Math.round(c.x2);
+        const y2 = Math.round(c.y2);
+
+        if (x1 === x2 && y1 >= 0 && y1 < CONFIG.rows && x1 >= 0 && x1 < CONFIG.cols) {
+          // Vertical
+          const minY = Math.min(y1, y2);
+          const maxY = Math.max(y1, y2);
+          for (let y = minY; y <= maxY; y++) {
+            if (grid[y] && grid[y][x1]) {
+              grid[y][x1] = { char: '│', opacity: c.opacity, bold: false };
+            }
           }
-        }
-      }
-
-      // Place tips with trails
-      for (const tip of tips) {
-        // Draw trail
-        for (const t of tip.trail) {
-          const tx = Math.round(t.x);
-          const ty = Math.round(t.y);
-          if (tx >= 0 && tx < CONFIG.cols && ty >= 0 && ty < CONFIG.rows) {
-            const fade = Math.max(0.1, 1 - t.age / 25);
-            if (grid[ty][tx].char === ' ') {
-              const trailChars = CHARS.trail;
-              grid[ty][tx] = { char: trailChars[Math.min(t.age % trailChars.length, trailChars.length - 1)], opacity: fade * 0.6 };
+        } else if (y1 === y2 && x1 >= 0 && x1 < CONFIG.cols && y1 >= 0 && y1 < CONFIG.rows) {
+          // Horizontal
+          const minX = Math.min(x1, x2);
+          const maxX = Math.max(x1, x2);
+          for (let x = minX; x <= maxX; x++) {
+            if (grid[y1] && grid[y1][x]) {
+              grid[y1][x] = { char: '─', opacity: c.opacity, bold: false };
+            }
+          }
+        } else {
+          // Diagonal - draw as best effort
+          const steps = Math.max(Math.abs(x2-x1), Math.abs(y2-y1));
+          for (let s = 0; s <= steps; s++) {
+            const t = s / steps;
+            const x = Math.round(x1 + (x2-x1) * t);
+            const y = Math.round(y1 + (y2-y1) * t);
+            if (y >= 0 && y < CONFIG.rows && x >= 0 && x < CONFIG.cols && grid[y]) {
+              const char = Math.abs(x2-x1) > Math.abs(y2-y1) ? '─' : '│';
+              grid[y][x] = { char, opacity: c.opacity * 0.7, bold: false };
             }
           }
         }
+      }
 
-        const x = Math.round(tip.x);
-        const y = Math.round(tip.y);
-        if (x >= 0 && x < CONFIG.cols && y >= 0 && y < CONFIG.rows) {
-          grid[y][x] = { char: tip.char, opacity: 1 };
+      // Draw trails
+      for (const f of fibers) {
+        for (const t of f.trail) {
+          const x = Math.round(t.x);
+          const y = Math.round(t.y);
+          if (y >= 0 && y < CONFIG.rows && x >= 0 && x < CONFIG.cols) {
+            const fade = 1 - t.age / CONFIG.trailLength;
+            const existing = grid[y][x];
+            if (existing.opacity < fade * 0.5) {
+              const idx = Math.floor(t.age / 5) % CHARS.trail.length;
+              grid[y][x] = { char: CHARS.trail[idx], opacity: fade * 0.5, bold: false };
+            }
+          }
+        }
+      }
+
+      // Draw nodes
+      for (const n of nodes) {
+        const x = Math.round(n.x);
+        const y = Math.round(n.y);
+        if (y >= 0 && y < CONFIG.rows && x >= 0 && x < CONFIG.cols) {
+          grid[y][x] = { char: n.char, opacity: n.opacity, bold: false };
+        }
+      }
+
+      // Draw fiber tips
+      for (const f of fibers) {
+        const x = Math.round(f.x);
+        const y = Math.round(f.y);
+        if (y >= 0 && y < CONFIG.rows && x >= 0 && x < CONFIG.cols) {
+          const idx = f.age % CHARS.tip.length;
+          grid[y][x] = { char: CHARS.tip[idx], opacity: 1, bold: true };
+        }
+      }
+
+      // Draw motion indicator
+      if (motionTarget && motionIntensity > 0.1) {
+        const x = Math.round(motionTarget.x);
+        const y = Math.round(motionTarget.y);
+        if (y >= 0 && y < CONFIG.rows && x >= 0 && x < CONFIG.cols) {
+          const idx = Math.floor(Date.now() / 200) % CHARS.motion.length;
+          grid[y][x] = { char: CHARS.motion[idx], opacity: motionIntensity, bold: true };
         }
       }
 
@@ -675,32 +535,22 @@
       for (let y = 0; y < CONFIG.rows; y++) {
         for (let x = 0; x < CONFIG.cols; x++) {
           const cell = grid[y][x];
-          let gray = Math.round(30 + cell.opacity * 70);
-          // Make active tips darker/black
-          if (cell.char === '@' || cell.char === '#' || cell.char === '█') {
-            gray = 0;
-          }
-          html += `<span style="color: hsl(0, 0%, ${gray}%)">${cell.char}</span>`;
+          const gray = Math.round(20 + cell.opacity * 75);
+          const weight = cell.bold ? 'font-weight: bold;' : '';
+          html += `<span style="color: hsl(0, 0%, ${gray}%); ${weight}">${cell.char}</span>`;
         }
         html += '\n';
       }
 
-      canvasEl.innerHTML = html;
+      canvas.innerHTML = html;
     }
 
     // ========================================
-    // ANIMATION LOOP
+    // ANIMATE
     // ========================================
     function animate() {
-      frameCount++;
-
-      if (frameCount % 2 === 0) {
-        processWebcam();
-      }
-
-      updateNetwork();
+      update();
       render();
-
       requestAnimationFrame(animate);
     }
 
@@ -708,39 +558,19 @@
     // RESIZE
     // ========================================
     function handleResize() {
-      const charWidth = canvasEl.clientWidth / CONFIG.cols;
-      const charHeight = canvasEl.clientHeight / CONFIG.rows;
-      const fontSize = Math.min(charWidth, charHeight * 1.3);
-      canvasEl.style.fontSize = `${fontSize}px`;
+      const charW = canvas.clientWidth / CONFIG.cols;
+      const charH = canvas.clientHeight / CONFIG.rows;
+      canvas.style.fontSize = `${Math.min(charW, charH * 1.3)}px`;
     }
 
     window.addEventListener('resize', handleResize);
 
-    // ========================================
-    // INIT
-    // ========================================
-    function init() {
-      initNetwork();
-      handleResize();
+    // Click to init webcam
+    document.addEventListener('click', () => {
+      if (!webcamReady) initWebcam();
+    }, { once: true });
 
-      // Start webcam WITHOUT await to prevent blocking
-      initWebcam().then(success => {
-        if (!success) {
-          // Webcam failed, animation still runs in ambient mode
-          console.log('Running in ambient mode');
-        }
-      });
-
-      // Start animation immediately
-      animate();
-    }
-
-    // Start when DOM ready
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', init);
-    } else {
-      init();
-    }
+    init();
   </script>
 </body>
 </html>
