@@ -354,7 +354,15 @@
           }
         });
         webcamEl.srcObject = stream;
-        await webcamEl.play();
+        
+        // Wait for video to be ready
+        await new Promise((resolve, reject) => {
+          webcamEl.onloadedmetadata = () => {
+            webcamEl.play().then(resolve).catch(reject);
+          };
+          webcamEl.onerror = reject;
+          setTimeout(() => reject(new Error('Timeout')), 10000);
+        });
 
         hiddenCanvas = document.createElement('canvas');
         hiddenCanvas.width = 160;
@@ -367,9 +375,40 @@
 
         return true;
       } catch (err) {
-        overlayEl.textContent = 'Webcam unavailable — try refreshing';
+        overlayEl.textContent = 'Click anywhere to enable webcam';
+        document.body.addEventListener('click', requestWebcam, { once: true });
+        document.body.addEventListener('touchstart', requestWebcam, { once: true });
         console.warn('Webcam error:', err);
         return false;
+      }
+    }
+
+    async function requestWebcam() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user' }
+        });
+        webcamEl.srcObject = stream;
+        
+        await new Promise((resolve, reject) => {
+          webcamEl.onloadedmetadata = () => {
+            webcamEl.play().then(resolve).catch(reject);
+          };
+          webcamEl.onerror = reject;
+          setTimeout(() => reject(new Error('Timeout')), 10000);
+        });
+
+        hiddenCanvas = document.createElement('canvas');
+        hiddenCanvas.width = 160;
+        hiddenCanvas.height = 120;
+        hiddenCtx = hiddenCanvas.getContext('2d', { willReadFrequently: true });
+
+        webcamActive = true;
+        overlayEl.textContent = 'Move to grow neural fibers';
+        toggleBtn.classList.add('active');
+      } catch (err) {
+        overlayEl.textContent = 'Webcam unavailable';
+        console.warn('Webcam error:', err);
       }
     }
 
