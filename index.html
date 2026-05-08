@@ -346,58 +346,36 @@
     // ========================================
     async function initWebcam() {
       console.log('initWebcam called');
-      return new Promise(async (resolve) => {
+      
+      try {
+        console.log('Requesting getUserMedia...');
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user' }
+        });
+        console.log('getUserMedia succeeded, stream:', stream);
+        webcamEl.srcObject = stream;
+
+        // play() might fail if already playing
         try {
-          console.log('Requesting getUserMedia...');
-          const stream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: 'user' }
-          });
-          console.log('getUserMedia succeeded');
-          webcamEl.srcObject = stream;
-
-          // Video may already have metadata, or may need to wait
-          if (webcamEl.readyState >= 1) {
-            // Already have metadata
-            await webcamEl.play();
-            setupWebcamCanvas();
-            resolve(true);
-          } else {
-            // Wait for metadata
-            webcamEl.onloadedmetadata = async () => {
-              try {
-                await webcamEl.play();
-                setupWebcamCanvas();
-                resolve(true);
-              } catch (e) {
-                resolve(false);
-              }
-            };
-          }
-
-          // Timeout fallback
-          setTimeout(() => {
-            console.log('Timeout check, readyState:', webcamEl.readyState);
-            if (webcamEl.readyState < 2) {
-              console.log('Timeout, stopping');
-              if (webcamEl.srcObject) {
-                webcamEl.srcObject.getTracks().forEach(t => t.stop());
-              }
-              webcamEl.srcObject = null;
-              resolve(false);
-            }
-          }, 8000);
-
-        } catch (err) {
-          console.warn('Webcam error:', err);
-          overlayEl.textContent = 'Click anywhere to enable webcam';
-          document.body.addEventListener('click', requestWebcam, { once: true });
-          document.body.addEventListener('touchstart', requestWebcam, { once: true });
-          resolve(false);
+          await webcamEl.play();
+        } catch (e) {
+          console.log('play() failed, trying to continue anyway:', e);
         }
-      });
+
+        setupWebcamCanvas();
+        return true;
+        
+      } catch (err) {
+        console.warn('Webcam error:', err);
+        overlayEl.textContent = 'Click anywhere to enable webcam';
+        document.body.addEventListener('click', requestWebcam, { once: true });
+        document.body.addEventListener('touchstart', requestWebcam, { once: true });
+        return false;
+      }
     }
 
     function setupWebcamCanvas() {
+      console.log('Setting up webcam canvas');
       hiddenCanvas = document.createElement('canvas');
       hiddenCanvas.width = 160;
       hiddenCanvas.height = 120;
@@ -408,21 +386,14 @@
     }
 
     async function requestWebcam() {
+      console.log('requestWebcam called');
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: 'user' }
         });
         webcamEl.srcObject = stream;
-
-        if (webcamEl.readyState >= 1) {
-          await webcamEl.play();
-          setupWebcamCanvas();
-        } else {
-          webcamEl.onloadedmetadata = async () => {
-            await webcamEl.play();
-            setupWebcamCanvas();
-          };
-        }
+        await webcamEl.play();
+        setupWebcamCanvas();
       } catch (err) {
         console.warn('Webcam error:', err);
         overlayEl.textContent = 'Webcam unavailable';
