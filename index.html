@@ -303,29 +303,24 @@
         }
       }
 
-      // Find nearest motion source
-      let nearestMotion = null;
-      let nearestDist = Infinity;
+      findNearestMotion() {
+        if (motionSources.length === 0) return null;
+        
+        let nearestMotion = null;
+        let nearestDist = Infinity;
 
-      for (const source of motionSources) {
-        const dx = source.x - this.x;
-        const dy = source.y - this.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < nearestDist) {
-          nearestDist = dist;
-          nearestMotion = source;
+        for (const source of motionSources) {
+          const dx = source.x - this.x;
+          const dy = source.y - this.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < nearestDist) {
+            nearestDist = dist;
+            nearestMotion = source;
+          }
         }
-      }
 
-      if (nearestMotion) {
-        const dx = nearestMotion.x - this.x;
-        const dy = nearestMotion.y - this.y;
-        const target = Math.atan2(dy, dx);
-        targetAngle = target;
+        return nearestMotion;
       }
-
-      return nearestMotion;
-    }
 
       shouldBranch() {
         return Math.random() < CONFIG.branchProbability &&
