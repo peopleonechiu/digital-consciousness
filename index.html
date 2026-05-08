@@ -5,53 +5,45 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Digital Consciousness</title>
   <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-
+    * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {
       width: 100%;
       height: 100%;
       overflow: hidden;
-      background: #ffffff;
-      font-family: 'Courier New', Consolas, Monaco, monospace;
+      background: #fff;
+      font-family: 'Courier New', Consolas, monospace;
     }
-
     #canvas {
       width: 100%;
       height: 100%;
       display: block;
       white-space: pre;
-      line-height: 1.2;
-      font-size: clamp(9px, 1.2vw, 14px);
-      color: #000000;
+      line-height: 1.15;
+      font-size: clamp(9px, 1.1vw, 13px);
+      color: #000;
       user-select: none;
-      cursor: crosshair;
     }
-
     #webcam-container {
       position: fixed;
       bottom: 20px;
       right: 20px;
-      width: 180px;
+      width: 200px;
       border: 2px solid #000;
       background: #000;
       z-index: 1000;
-      opacity: 0.85;
     }
-
-    #webcam-container.hidden {
-      display: none;
-    }
-
-    #webcam {
+    #webcam-container.hidden { display: none; }
+    #webcam, #debug-canvas {
       width: 100%;
       height: auto;
       display: block;
     }
-
+    #debug-canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      opacity: 0.6;
+    }
     #toggle-btn {
       position: fixed;
       bottom: 20px;
@@ -67,86 +59,84 @@
       align-items: center;
       justify-content: center;
     }
-
-    #toggle-btn.active {
-      background: #000;
-      color: #fff;
-    }
-
+    #toggle-btn.active { background: #000; color: #fff; }
     #overlay {
       position: fixed;
       top: 20px;
       left: 20px;
-      font-size: 13px;
+      font-size: 12px;
       color: #333;
-      background: rgba(255,255,255,0.95);
-      padding: 10px 16px;
+      background: rgba(255,255,255,0.9);
+      padding: 8px 14px;
       border: 1px solid #ccc;
       z-index: 100;
+      font-family: 'Courier New', monospace;
     }
   </style>
 </head>
 <body>
-  <div id="overlay">Click to enable webcam</div>
+  <div id="overlay">Initializing...</div>
   <button id="toggle-btn">📷</button>
   <div id="webcam-container" class="hidden">
     <video id="webcam" autoplay playsinline muted></video>
+    <canvas id="debug-canvas"></canvas>
   </div>
   <div id="canvas"></div>
 
   <script>
-    // ========================================
+    // =============================================
     // CONFIG
-    // ========================================
-    const CONFIG = {
-      cols: 100,
-      rows: 55,
-      baseSpeed: 0.4,          // Slow base movement
-      trackSpeed: 1.2,         // Faster when tracking
-      turnRate: 0.04,          // Smooth turning
-      wobbleAmount: 0.08,      // Gentle wobble
-      branchChance: 0.03,       // Low branching
-      maxFibers: 15,           // Limited fibers
-      trailLength: 25,          // Longer trails
-      lineFadeSpeed: 0.015,    // Slow fade
-      motionThreshold: 20,
-      sensorSize: 14           // Larger detection blocks
+    // =============================================
+    const CFG = {
+      cols: 110,
+      rows: 58,
+      baseSpeed: 0.25,
+      trackSpeed: 0.8,
+      turnRate: 0.06,
+      wobble: 0.04,
+      branchProb: 0.02,
+      maxFibers: 12,
+      maxNodes: 80,
+      trailLen: 30,
+      motionThresh: 18,
+      motionBlock: 12,
+      camWidth: 120,
+      camHeight: 90
     };
 
-    // ASCII characters - elegant set
-    const CHARS = {
-      tip: ['✦', '✧', '∗', '•', '◦', '∘'],
-      node: ['○', '◌', '◎', '●'],
-      line: ['─', '│', '┌', '┐', '└', '┘', '├', '┤', '┬', '┴', '┼', '─', '│'],
-      trail: ['·', '∙', '◦', '・'],
-      motion: ['◉', '◎', '○']
+    // Raw ASCII only - contemporary art aesthetic
+    const C = {
+      tip: ['@', '#', '*'],
+      node: ['+', 'x', 'o'],
+      line: ['-', '|', '+'],
+      trail: ['.', '`', '\'', '"']
     };
 
-    // ========================================
+    // =============================================
     // STATE
-    // ========================================
-    let fibers = [];           // Growing fiber tips
-    let nodes = [];            // Established nodes/joints
-    let connections = [];      // Lines between nodes
-    let trails = [];           // Trail points
-    let motionTarget = null;   // Current motion center
-    let motionIntensity = 0;
+    // =============================================
+    let fibers = [];
+    let nodes = [];
+    let connections = [];
+    let motionTarget = null;
+    let motionActivity = 0;
     let webcamReady = false;
     let lastFrame = null;
-    let hiddenCanvas, hiddenCtx;
+    let hiddenCanvas, hiddenCtx, debugCanvas, debugCtx;
 
-    // ========================================
+    // =============================================
     // DOM
-    // ========================================
+    // =============================================
     const canvas = document.getElementById('canvas');
     const webcam = document.getElementById('webcam');
     const overlay = document.getElementById('overlay');
     const toggleBtn = document.getElementById('toggle-btn');
     const webcamContainer = document.getElementById('webcam-container');
+    const debugCanvasEl = document.getElementById('debug-canvas');
 
-    // ========================================
+    // =============================================
     // WEBCAM
-    // ========================================
+    // =============================================
     toggleBtn.addEventListener('click', () => {
       webcamContainer.classList.toggle('hidden');
       toggleBtn.classList.toggle('active');
@@ -155,31 +145,41 @@
     async function initWebcam() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user', width: 320, height: 240 }
+          video: { facingMode: 'user', width: 160, height: 120 }
         });
         webcam.srcObject = stream;
         await webcam.play();
 
         hiddenCanvas = document.createElement('canvas');
-        hiddenCanvas.width = 80;
-        hiddenCanvas.height = 60;
+        hiddenCanvas.width = CFG.camWidth;
+        hiddenCanvas.height = CFG.camHeight;
         hiddenCtx = hiddenCanvas.getContext('2d', { willReadFrequently: true });
 
+        debugCanvas = debugCanvasEl;
+        debugCanvas.width = 160;
+        debugCanvas.height = 120;
+        debugCtx = debugCanvas.getContext('2d');
+
         webcamReady = true;
-        overlay.textContent = 'Move slowly to grow fibers';
+        overlay.textContent = 'Webcam active - move slowly';
         toggleBtn.classList.add('active');
         return true;
       } catch (e) {
-        overlay.textContent = 'Webcam unavailable';
+        overlay.textContent = 'No webcam - ambient mode';
+        console.warn(e);
         return false;
       }
     }
 
+    // =============================================
+    // MOTION DETECTION
+    // =============================================
     function detectMotion() {
       if (!webcamReady || webcam.readyState < 2) return;
 
-      hiddenCtx.drawImage(webcam, 0, 0, 80, 60);
-      const frame = hiddenCtx.getImageData(0, 0, 80, 60);
+      // Capture frame
+      hiddenCtx.drawImage(webcam, 0, 0, CFG.camWidth, CFG.camHeight);
+      const frame = hiddenCtx.getImageData(0, 0, CFG.camWidth, CFG.camHeight);
       const data = frame.data;
 
       if (!lastFrame) {
@@ -188,387 +188,340 @@
         return;
       }
 
+      // Find motion blocks
       let totalMotion = 0;
-      let motionX = 0;
-      let motionY = 0;
-      let count = 0;
+      let sumX = 0, sumY = 0, count = 0;
+      const motionBlocks = [];
 
-      const block = CONFIG.sensorSize;
+      for (let by = 0; by < CFG.camHeight; by += CFG.motionBlock) {
+        for (let bx = 0; bx < CFG.camWidth; bx += CFG.motionBlock) {
+          let blockDiff = 0;
 
-      for (let by = 0; by < 60; by += block) {
-        for (let bx = 0; bx < 80; bx += block) {
-          let blockMotion = 0;
-
-          for (let y = by; y < by + block && y < 60; y++) {
-            for (let x = bx; x < bx + block && x < 80; x++) {
-              const i = (y * 80 + x) * 4;
-              const diff = Math.abs(data[i] - lastFrame[i]) +
-                          Math.abs(data[i+1] - lastFrame[i+1]) +
-                          Math.abs(data[i+2] - lastFrame[i+2]);
-              blockMotion += diff;
+          for (let y = by; y < by + CFG.motionBlock && y < CFG.camHeight; y++) {
+            for (let x = bx; x < bx + CFG.motionBlock && x < CFG.camWidth; x++) {
+              const i = (y * CFG.camWidth + x) * 4;
+              blockDiff += Math.abs(data[i] - lastFrame[i]);
+              blockDiff += Math.abs(data[i+1] - lastFrame[i+1]);
+              blockDiff += Math.abs(data[i+2] - lastFrame[i+2]);
             }
           }
 
-          if (blockMotion > CONFIG.motionThreshold * 10) {
-            motionX += bx;
-            motionY += by;
+          if (blockDiff > CFG.motionThresh * 3) {
+            motionBlocks.push({ x: bx, y: by, d: blockDiff });
+            totalMotion += blockDiff;
+            sumX += bx * blockDiff;
+            sumY += by * blockDiff;
             count++;
-            totalMotion += blockMotion;
           }
         }
       }
 
       lastFrame.set(data);
 
-      // Smooth motion intensity
+      // Draw debug view
+      if (debugCtx && !webcamContainer.classList.contains('hidden')) {
+        debugCtx.clearRect(0, 0, 160, 120);
+        for (const b of motionBlocks) {
+          debugCtx.fillStyle = `rgba(255,0,0,${Math.min(1, b.d / 500)})`;
+          debugCtx.fillRect(b.x, b.y, CFG.motionBlock, CFG.motionBlock);
+        }
+        if (motionTarget) {
+          const tx = motionTarget.x / CFG.cols * 160;
+          const ty = motionTarget.y / CFG.rows * 120;
+          debugCtx.strokeStyle = 'lime';
+          debugCtx.lineWidth = 2;
+          debugCtx.beginPath();
+          debugCtx.arc(tx, ty, 8, 0, Math.PI * 2);
+          debugCtx.stroke();
+        }
+      }
+
+      // Update motion target
       if (totalMotion > 0 && count > 0) {
-        const targetX = (motionX / count) / 80 * CONFIG.cols;
-        const targetY = (motionY / count) / 60 * CONFIG.rows;
+        const tx = (sumX / totalMotion) / CFG.camWidth * CFG.cols;
+        const ty = (sumY / totalMotion) / CFG.camHeight * CFG.rows;
 
         if (motionTarget) {
-          motionTarget.x += (targetX - motionTarget.x) * 0.3;
-          motionTarget.y += (targetY - motionTarget.y) * 0.3;
+          motionTarget.x += (tx - motionTarget.x) * 0.4;
+          motionTarget.y += (ty - motionTarget.y) * 0.4;
         } else {
-          motionTarget = { x: targetX, y: targetY };
+          motionTarget = { x: tx, y: ty };
         }
 
-        motionIntensity = Math.min(1, motionIntensity + 0.15);
+        motionActivity = Math.min(1, motionActivity + 0.2);
       } else {
-        motionIntensity = Math.max(0, motionIntensity - 0.02);
+        motionActivity = Math.max(0, motionActivity - 0.015);
       }
     }
 
-    // ========================================
-    // FIBER (Growing tip)
-    // ========================================
+    // =============================================
+    // FIBER (growing tip)
+    // =============================================
     class Fiber {
       constructor(x, y, angle) {
         this.x = x;
         this.y = y;
         this.angle = angle;
-        this.speed = CONFIG.baseSpeed;
+        this.speed = CFG.baseSpeed;
         this.trail = [];
         this.age = 0;
-        this.maturity = 0;
-        this.connected = false;
-        this.running = false;  // Is actively tracking
+        this.energy = 0.3;
       }
 
       update() {
         this.age++;
-        this.maturity += 0.003;
+        this.energy = Math.min(1, this.energy + 0.002);
 
-        // Store trail
+        // Trail
         this.trail.push({ x: this.x, y: this.y, age: 0 });
-        if (this.trail.length > CONFIG.trailLength) {
-          this.trail.shift();
-        }
+        if (this.trail.length > CFG.trailLen) this.trail.shift();
         for (const t of this.trail) t.age++;
 
-        // Determine speed based on tracking
-        let targetSpeed = CONFIG.baseSpeed;
-        let isRunning = false;
-
-        if (motionTarget && motionIntensity > 0.1) {
+        // Speed: slow by default, faster when tracking
+        let targetSpeed = CFG.baseSpeed;
+        if (motionTarget && motionActivity > 0.1) {
           const dx = motionTarget.x - this.x;
           const dy = motionTarget.y - this.y;
           const dist = Math.sqrt(dx * dx + dy * dy);
-
-          if (dist < 30) {
-            targetSpeed = CONFIG.trackSpeed;
-            isRunning = true;
-          }
+          targetSpeed = CFG.trackSpeed * Math.max(0.3, 1 - dist / 40);
+          this.energy = Math.min(1, this.energy + 0.01);
         }
-
-        this.running = isRunning;
-        this.speed += (targetSpeed - this.speed) * 0.05;
+        this.speed += (targetSpeed - this.speed) * 0.03;
 
         // Turn toward motion
-        if (motionTarget && motionIntensity > 0.05) {
+        if (motionTarget && motionActivity > 0.05) {
           const dx = motionTarget.x - this.x;
           const dy = motionTarget.y - this.y;
-          const targetAngle = Math.atan2(dy, dx);
-
-          let diff = targetAngle - this.angle;
+          const target = Math.atan2(dy, dx);
+          let diff = target - this.angle;
           while (diff > Math.PI) diff -= Math.PI * 2;
           while (diff < -Math.PI) diff += Math.PI * 2;
-
-          this.angle += diff * CONFIG.turnRate;
+          this.angle += diff * CFG.turnRate * this.energy;
         }
 
-        // Add gentle wobble
-        const wobble = Math.sin(this.age * 0.03) * CONFIG.wobbleAmount;
-        this.angle += wobble;
+        // Organic wobble
+        this.angle += Math.sin(this.age * 0.05) * CFG.wobble * 0.3;
 
         // Move
         this.x += Math.cos(this.angle) * this.speed;
         this.y += Math.sin(this.angle) * this.speed;
 
-        // Boundary - gentle bounce
-        const m = 5;
-        if (this.x < m) { this.x = m; this.angle = Math.PI - this.angle + (Math.random() - 0.5) * 0.5; }
-        if (this.x > CONFIG.cols - m) { this.x = CONFIG.cols - m; this.angle = Math.PI - this.angle + (Math.random() - 0.5) * 0.5; }
-        if (this.y < m) { this.y = m; this.angle = -this.angle + (Math.random() - 0.5) * 0.5; }
-        if (this.y > CONFIG.rows - m) { this.y = CONFIG.rows - m; this.angle = -this.angle + (Math.random() - 0.5) * 0.5; }
-      }
+        // Boundary - elastic bounce
+        const m = 4;
+        if (this.x < m) { this.x = m; this.angle = Math.PI - this.angle; }
+        if (this.x > CFG.cols - m) { this.x = CFG.cols - m; this.angle = Math.PI - this.angle; }
+        if (this.y < m) { this.y = m; this.angle = -this.angle; }
+        if (this.y > CFG.rows - m) { this.y = CFG.rows - m; this.angle = -this.angle; }
 
-      isMature() {
-        return this.maturity > 1 || this.age > 800;
+        // Occasional branch
+        if (this.age > 150 && this.age % 300 === 0 && fibers.length < CFG.maxFibers && Math.random() < CFG.branchProb * 15) {
+          const bAngle = this.angle + (Math.random() > 0.5 ? 0.6 : -0.6);
+          fibers.push(new Fiber(this.x, this.y, bAngle));
+        }
       }
     }
 
-    // ========================================
-    // NODE (Joint)
-    // ========================================
+    // =============================================
+    // NODE
+    // =============================================
     class Node {
       constructor(x, y) {
         this.x = x;
         this.y = y;
-        this.opacity = 0.8;
-        this.char = CHARS.node[Math.floor(Math.random() * CHARS.node.length)];
+        this.opacity = 0.7;
+        this.char = C.node[Math.floor(Math.random() * C.node.length)];
       }
     }
 
-    // ========================================
-    // CONNECTION (Line segment)
-    // ========================================
-    class Connection {
-      constructor(x1, y1, x2, y2) {
-        this.x1 = x1;
-        this.y1 = y1;
-        this.x2 = x2;
-        this.y2 = y2;
-        this.opacity = 0.5;
-        this.age = 0;
-      }
-    }
-
-    // ========================================
-    // INIT
-    // ========================================
-    function init() {
-      // Start with a few seed fibers
-      const cx = CONFIG.cols / 2;
-      const cy = CONFIG.rows / 2;
-
-      const angles = [0, Math.PI * 0.5, Math.PI, Math.PI * 1.5];
-      for (const a of angles) {
-        fibers.push(new Fiber(cx, cy, a));
-      }
-
-      handleResize();
-      initWebcam();
-      requestAnimationFrame(animate);
-    }
-
-    // ========================================
+    // =============================================
     // UPDATE
-    // ========================================
+    // =============================================
     function update() {
       detectMotion();
 
       // Update fibers
       for (let i = fibers.length - 1; i >= 0; i--) {
-        const f = fibers[i];
-        f.update();
-
-        // Mature into node
-        if (f.isMature()) {
-          nodes.push(new Node(f.x, f.y));
-
-          // Keep a few mature fibers as "living"
-          if (fibers.length > 5) {
-            fibers.splice(i, 1);
-          }
-        }
-
-        // Occasional branching
-        if (f.age > 100 && f.age % 200 === 0 && fibers.length < CONFIG.maxFibers && Math.random() < CONFIG.branchChance * 10) {
-          const branchAngle = f.angle + (Math.random() > 0.5 ? 0.5 : -0.5);
-          fibers.push(new Fiber(f.x, f.y, branchAngle));
-        }
+        fibers[i].update();
       }
 
-      // Spawn new fiber from node toward motion
-      if (motionTarget && motionIntensity > 0.3 && fibers.length < CONFIG.maxFibers) {
-        if (Math.random() < 0.02) {
-          // Pick a random existing node
+      // Spawn fiber from nearest node toward motion
+      if (motionTarget && motionActivity > 0.4 && fibers.length < CFG.maxFibers) {
+        if (Math.random() < 0.03) {
           if (nodes.length > 0) {
-            const node = nodes[Math.floor(Math.random() * nodes.length)];
-            const angle = Math.atan2(motionTarget.y - node.y, motionTarget.x - node.x);
-            fibers.push(new Fiber(node.x, node.y, angle));
+            // Find node nearest to motion
+            let best = null, bestDist = Infinity;
+            for (const n of nodes) {
+              const dx = n.x - motionTarget.x;
+              const dy = n.y - motionTarget.y;
+              const d = Math.sqrt(dx*dx + dy*dy);
+              if (d < bestDist) { bestDist = d; best = n; }
+            }
+            if (best) {
+              const angle = Math.atan2(motionTarget.y - best.y, motionTarget.x - best.x);
+              fibers.push(new Fiber(best.x, best.y, angle));
+            }
           }
         }
       }
 
-      // Keep connections updated between nearby fibers/nodes
+      // Convert old fibers to nodes
+      for (let i = fibers.length - 1; i >= 0; i--) {
+        if (fibers[i].age > 600 + Math.random() * 400) {
+          nodes.push(new Node(fibers[i].x, fibers[i].y));
+          if (fibers.length > 4) fibers.splice(i, 1);
+        }
+      }
+
+      // Connect fibers to nearby nodes
       for (const f of fibers) {
         for (const n of nodes) {
           const dx = f.x - n.x;
           const dy = f.y - n.y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-
-          if (dist < 8 && dist > 1) {
-            // Create connection
-            const exists = connections.some(c =>
-              (c.x1 === n.x && c.y1 === n.y && c.x2 === f.x && c.y2 === f.y) ||
-              (c.x1 === f.x && c.y1 === f.y && c.x2 === n.x && c.y2 === n.y)
-            );
-
-            if (!exists) {
-              connections.push(new Connection(n.x, n.y, f.x, f.y));
-            }
+          if (Math.sqrt(dx*dx + dy*dy) < 6) {
+            connections.push({
+              x1: n.x, y1: n.y, x2: f.x, y2: f.y, age: 0
+            });
           }
         }
       }
 
-      // Fade connections
+      // Age connections
       for (let i = connections.length - 1; i >= 0; i--) {
         connections[i].age++;
-        connections[i].opacity = Math.max(0.1, 0.5 - connections[i].age * CONFIG.lineFadeSpeed);
-        if (connections[i].opacity <= 0.1) {
-          connections.splice(i, 1);
-        }
+        if (connections[i].age > 400) connections.splice(i, 1);
+      }
+
+      // Limit nodes
+      while (nodes.length > CFG.maxNodes) {
+        nodes.shift();
       }
     }
 
-    // ========================================
+    // =============================================
     // RENDER
-    // ========================================
+    // =============================================
     function render() {
       const grid = [];
-
-      for (let y = 0; y < CONFIG.rows; y++) {
+      for (let y = 0; y < CFG.rows; y++) {
         grid[y] = [];
-        for (let x = 0; x < CONFIG.cols; x++) {
-          grid[y][x] = { char: ' ', opacity: 0, bold: false };
+        for (let x = 0; x < CFG.cols; x++) {
+          grid[y][x] = { c: ' ', o: 0 };
         }
       }
 
-      // Draw connections as lines
-      for (const c of connections) {
-        const x1 = Math.round(c.x1);
-        const y1 = Math.round(c.y1);
-        const x2 = Math.round(c.x2);
-        const y2 = Math.round(c.y2);
+      // Connections as simple lines
+      for (const conn of connections) {
+        const x1 = Math.round(conn.x1), y1 = Math.round(conn.y1);
+        const x2 = Math.round(conn.x2), y2 = Math.round(conn.y2);
+        const opacity = Math.max(0.1, 0.6 - conn.age * 0.001);
 
-        if (x1 === x2 && y1 >= 0 && y1 < CONFIG.rows && x1 >= 0 && x1 < CONFIG.cols) {
-          // Vertical
-          const minY = Math.min(y1, y2);
-          const maxY = Math.max(y1, y2);
-          for (let y = minY; y <= maxY; y++) {
-            if (grid[y] && grid[y][x1]) {
-              grid[y][x1] = { char: '│', opacity: c.opacity, bold: false };
-            }
+        // Bresenham-style line
+        const dx = Math.abs(x2-x1), dy = Math.abs(y2-y1);
+        const sx = x1 < x2 ? 1 : -1, sy = y1 < y2 ? 1 : -1;
+        let err = dx - dy;
+        let x = x1, y = y1;
+
+        while (true) {
+          if (y >= 0 && y < CFG.rows && x >= 0 && x < CFG.cols) {
+            const char = dx > dy ? '-' : '|';
+            grid[y][x] = { c: char, o: opacity };
           }
-        } else if (y1 === y2 && x1 >= 0 && x1 < CONFIG.cols && y1 >= 0 && y1 < CONFIG.rows) {
-          // Horizontal
-          const minX = Math.min(x1, x2);
-          const maxX = Math.max(x1, x2);
-          for (let x = minX; x <= maxX; x++) {
-            if (grid[y1] && grid[y1][x]) {
-              grid[y1][x] = { char: '─', opacity: c.opacity, bold: false };
-            }
-          }
-        } else {
-          // Diagonal - draw as best effort
-          const steps = Math.max(Math.abs(x2-x1), Math.abs(y2-y1));
-          for (let s = 0; s <= steps; s++) {
-            const t = s / steps;
-            const x = Math.round(x1 + (x2-x1) * t);
-            const y = Math.round(y1 + (y2-y1) * t);
-            if (y >= 0 && y < CONFIG.rows && x >= 0 && x < CONFIG.cols && grid[y]) {
-              const char = Math.abs(x2-x1) > Math.abs(y2-y1) ? '─' : '│';
-              grid[y][x] = { char, opacity: c.opacity * 0.7, bold: false };
-            }
-          }
+          if (x === x2 && y === y2) break;
+          const e2 = 2 * err;
+          if (e2 > -dy) { err -= dy; x += sx; }
+          if (e2 < dx) { err += dx; y += sy; }
         }
       }
 
-      // Draw trails
+      // Trails
       for (const f of fibers) {
         for (const t of f.trail) {
           const x = Math.round(t.x);
           const y = Math.round(t.y);
-          if (y >= 0 && y < CONFIG.rows && x >= 0 && x < CONFIG.cols) {
-            const fade = 1 - t.age / CONFIG.trailLength;
-            const existing = grid[y][x];
-            if (existing.opacity < fade * 0.5) {
-              const idx = Math.floor(t.age / 5) % CHARS.trail.length;
-              grid[y][x] = { char: CHARS.trail[idx], opacity: fade * 0.5, bold: false };
+          if (y >= 0 && y < CFG.rows && x >= 0 && x < CFG.cols) {
+            const fade = 1 - t.age / CFG.trailLen;
+            if (grid[y][x].o < fade * 0.4) {
+              const ci = Math.min(Math.floor(t.age / 8), C.trail.length - 1);
+              grid[y][x] = { c: C.trail[ci], o: fade * 0.35 };
             }
           }
         }
       }
 
-      // Draw nodes
+      // Nodes
       for (const n of nodes) {
         const x = Math.round(n.x);
         const y = Math.round(n.y);
-        if (y >= 0 && y < CONFIG.rows && x >= 0 && x < CONFIG.cols) {
-          grid[y][x] = { char: n.char, opacity: n.opacity, bold: false };
+        if (y >= 0 && y < CFG.rows && x >= 0 && x < CFG.cols) {
+          grid[y][x] = { c: n.char, o: n.opacity };
         }
       }
 
-      // Draw fiber tips
+      // Fiber tips (always on top)
       for (const f of fibers) {
         const x = Math.round(f.x);
         const y = Math.round(f.y);
-        if (y >= 0 && y < CONFIG.rows && x >= 0 && x < CONFIG.cols) {
-          const idx = f.age % CHARS.tip.length;
-          grid[y][x] = { char: CHARS.tip[idx], opacity: 1, bold: true };
+        if (y >= 0 && y < CFG.rows && x >= 0 && x < CFG.cols) {
+          const ci = f.age % C.tip.length;
+          const intensity = f.energy > 0.7 ? '#' : f.energy > 0.4 ? '*' : '@';
+          grid[y][x] = { c: intensity, o: 1 };
         }
       }
 
-      // Draw motion indicator
-      if (motionTarget && motionIntensity > 0.1) {
+      // Motion target indicator
+      if (motionTarget && motionActivity > 0.1) {
         const x = Math.round(motionTarget.x);
         const y = Math.round(motionTarget.y);
-        if (y >= 0 && y < CONFIG.rows && x >= 0 && x < CONFIG.cols) {
-          const idx = Math.floor(Date.now() / 200) % CHARS.motion.length;
-          grid[y][x] = { char: CHARS.motion[idx], opacity: motionIntensity, bold: true };
+        if (y >= 0 && y < CFG.rows && x >= 0 && x < CFG.cols) {
+          grid[y][x] = { c: 'O', o: motionActivity * 0.8 };
         }
       }
 
       // Build HTML
       let html = '';
-      for (let y = 0; y < CONFIG.rows; y++) {
-        for (let x = 0; x < CONFIG.cols; x++) {
+      for (let y = 0; y < CFG.rows; y++) {
+        for (let x = 0; x < CFG.cols; x++) {
           const cell = grid[y][x];
-          const gray = Math.round(20 + cell.opacity * 75);
-          const weight = cell.bold ? 'font-weight: bold;' : '';
-          html += `<span style="color: hsl(0, 0%, ${gray}%); ${weight}">${cell.char}</span>`;
+          const g = Math.round(20 + cell.o * 70);
+          const w = cell.c === '@' || cell.c === '#' ? 'font-weight:bold;' : '';
+          html += `<span style="color:hsl(0,0%,${g}%);${w}">${cell.c}</span>`;
         }
         html += '\n';
       }
-
       canvas.innerHTML = html;
     }
 
-    // ========================================
-    // ANIMATE
-    // ========================================
+    // =============================================
+    // LOOP
+    // =============================================
     function animate() {
       update();
       render();
       requestAnimationFrame(animate);
     }
 
-    // ========================================
-    // RESIZE
-    // ========================================
     function handleResize() {
-      const charW = canvas.clientWidth / CONFIG.cols;
-      const charH = canvas.clientHeight / CONFIG.rows;
-      canvas.style.fontSize = `${Math.min(charW, charH * 1.3)}px`;
+      const w = canvas.clientWidth / CFG.cols;
+      const h = canvas.clientHeight / CFG.rows;
+      canvas.style.fontSize = `${Math.min(w, h * 1.25)}px`;
     }
-
     window.addEventListener('resize', handleResize);
 
-    // Click to init webcam
-    document.addEventListener('click', () => {
-      if (!webcamReady) initWebcam();
-    }, { once: true });
+    // =============================================
+    // INIT
+    // =============================================
+    function init() {
+      const cx = CFG.cols / 2;
+      const cy = CFG.rows / 2;
+      const angles = [0, Math.PI*0.4, Math.PI*0.8, Math.PI*1.2, Math.PI*1.6];
+      for (const a of angles) {
+        fibers.push(new Fiber(cx, cy, a));
+      }
+
+      handleResize();
+      initWebcam();
+      animate();
+    }
 
     init();
   </script>
