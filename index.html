@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Digital Consciousness</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #ffffff;
+      font-family: 'Courier New', Consolas, Monaco, monospace;
+    }
+
+    #canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      white-space: pre;
+      line-height: 1.1;
+      font-size: clamp(10px, 1.5vw, 16px);
+      color: #000000;
+      user-select: none;
+      cursor: crosshair;
+    }
+
+    #webcam {
+      position: absolute;
+      top: -9999px;
+      left: -9999px;
+      width: 320px;
+      height: 240px;
+    }
+
+    #overlay {
+      position: fixed;
+      top: 20px;
+      left: 20px;
+      font-size: 12px;
+      color: #888;
+      pointer-events: none;
+      z-index: 100;
+    }
+
+    #overlay.active {
+      color: #000;
+    }
+
+    .char {
+      display: inline;
+      transition: opacity 0.3s ease;
+    }
+  </style>
+</head>
+<body>
+  <video id="webcam" autoplay playsinline muted></video>
+  <div id="overlay">Initializing webcam...</div>
+  <div id="canvas"></div>
+
+  <script>
+    // ========================================
+    // CONFIGURATION
+    // ========================================
+    const CONFIG = {
+      cols: 80,
+      rows: 45,
+      growthRate: 1.2,
+      branchProbability: 0.12,
+      maxTips: 25,
+      maxNodes: 350,
+      motionThreshold: 15,
+      motionSmoothingFrames: 4,
+      dormantThreshold: 180, // frames (~3 seconds at 60fps)
+      ambientDrift: 0.02,
+      colors: {
+        dormant: '#cccccc',
+        established: '#999999',
+        active: '#000000',
+        tip: '#333333'
+      }
+    };
+
+    const CHARS = {
+      dormant: ['.', '·', ':', '˙'],
+      established: ['-', '|', '+', '\\', '/', 'x'],
+      active: ['@', '#', '*', '█'],
+      junction: ['○', '◉', '◎', '⊕']
+    };
+
+    // ========================================
+    // STATE
+    // ========================================
+    let nodes = [];
+    let tips = [];
+    let connections = new Map();
+    let motionHistory = [];
+    let motionSources = [];
+    let lastFrameTime = 0;
+    let frameCount = 0;
+
+    // ========================================
+    // DOM ELEMENTS
+    // ========================================
+    const webcamEl = document.getElementById('webcam');
+    const canvasEl = document.getElementById('canvas');
+    const overlayEl = document.getElementById('overlay');
+    let ctx;
+    let hiddenCanvas, hiddenCtx;
+
+    // ========================================
+    // NODE CLASS
+    // ========================================
+    class Node {
+      constructor(x, y, isRoot = false) {
+        this.x = x;
+        this.y = y;
+        this.isRoot = isRoot;
+        this.dormantFrames = 0;
+        this.char = this.randomChar('established');
+        this.opacity = 1;
+        this.age = 0;
+      }
+
+      randomChar(type) {
+        const chars = CHARS[type] || CHARS.dormant;
+        return chars[Math.floor(Math.random() * chars.length)];
+      }
+
+      update() {
+        this.age++;
+        if (motionSources.length === 0) {
+          this.dormantFrames++;
+          this.opacity = Math.max(0.3, 1 - (this.dormantFrames / CONFIG.dormantThreshold));
+          this.char = this.randomChar('dormant');
+        } else {
+          this.dormantFrames = 0;
+          this.opacity = Math.min(1, this.opacity + 0.05);
+          if (this.age > 100) {
+            this.char = this.randomChar('established');
+          }
+        }
+      }
+    }
+
+    // ========================================
+    // TIP CLASS (Growing neural fiber)
+    // ========================================
+    class Tip {
+      constructor(x, y, angle = null, depth = 0) {
+        this.x = x;
+        this.y = y;
+        this.angle = angle !== null ? angle : Math.random() * Math.PI * 2;
+        this.depth = depth;
+        this.speed = CONFIG.growthRate * (0.8 + Math.random() * 0.4);
+        this.wobble = (Math.random() - 0.5) * 0.3;
+        this.char = this.randomChar('active');
+      }
+
+      randomChar(type) {
+        const chars = CHARS[type] || CHARS.active;
+        return chars[Math.floor(Math.random() * chars.length)];
+      }
+
+      update() {
+        this.depth += this.speed;
+
+        // Apply wobble
+        this.wobble += (Math.random() - 0.5) * 0.1;
+        this.wobble = Math.max(-0.4, Math.min(0.4, this.wobble));
+
+        // Determine target angle based on motion
+        let targetAngle = this.wobble;
+        if (motionSources.length > 0) {
+          const nearest = this.findNearestMotion();
+          if (nearest) {
+            const dx = nearest.x - this.x;
+            const dy = nearest.y - this.y;
+            targetAngle = Math.atan2(dy, dx);
+          }
+        }
+
+        // Blend toward target
+        this.angle += (targetAngle - this.angle) * 0.08 + this.wobble * 0.1;
+
+        // Move
+        this.x += Math.cos(this.angle) * this.speed;
+        this.y += Math.sin(this.angle) * this.speed;
+
+        // Occasionally update character
+        if (Math.random() < 0.1) {
+          this.char = this.randomChar('active');
+        }
+
+        // Boundary bounce
+        if (this.x < 0 || this.x >= CONFIG.cols || this.y < 0 || this.y >= CONFIG.rows) {
+          this.angle += Math.PI / 2 + (Math.random() - 0.5);
+          this.x = Math.max(0, Math.min(CONFIG.cols - 1, this.x));
+          this.y = Math.max(0, Math.min(CONFIG.rows - 1, this.y));
+        }
+      }
+
+      findNearestMotion() {
+        if (motionSources.length === 0) return null;
+        let nearest = null;
+        let nearestDist = Infinity;
+        for (const source of motionSources) {
+          const dx = source.x - this.x;
+          const dy = source.y - this.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < nearestDist) {
+            nearestDist = dist;
+            nearest = source;
+          }
+        }
+        return nearest;
+      }
+
+      shouldBranch() {
+        return Math.random() < CONFIG.branchProbability && this.depth > 5 && this.depth < 80;
+      }
+
+      isMature() {
+        return this.depth > 120 + Math.random() * 60;
+      }
+    }
+
+    // ========================================
+    // WEBCAM PROCESSOR
+    // ========================================
+    async function initWebcam() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 320 },
+            height: { ideal: 240 },
+            facingMode: 'user'
+          }
+        });
+        webcamEl.srcObject = stream;
+        await webcamEl.play();
+
+        hiddenCanvas = document.createElement('canvas');
+        hiddenCanvas.width = 160;
+        hiddenCanvas.height = 120;
+        hiddenCtx = hiddenCanvas.getContext('2d', { willReadFrequently: true });
+
+        overlayEl.textContent = 'Webcam active — move to grow neural fibers';
+        overlayEl.classList.add('active');
+
+        return true;
+      } catch (err) {
+        overlayEl.textContent = 'Webcam unavailable — ambient mode';
+        console.warn('Webcam error:', err);
+        return false;
+      }
+    }
+
+    function processWebcam() {
+      if (!webcamEl.readyState || webcamEl.readyState < 2) return;
+
+      // Downsample webcam frame
+      hiddenCtx.drawImage(webcamEl, 0, 0, 160, 120);
+      const frame = hiddenCtx.getImageData(0, 0, 160, 120);
+      const data = frame.data;
+
+      // Calculate motion
+      const motionPoints = [];
+      const blockSize = 10;
+
+      for (let by = 0; by < 120; by += blockSize) {
+        for (let bx = 0; bx < 160; bx += blockSize) {
+          let blockMotion = 0;
+
+          for (let y = by; y < by + blockSize && y < 120; y++) {
+            for (let x = bx; x < bx + blockSize && x < 160; x++) {
+              const i = (y * 160 + x) * 4;
+              const brightness = (data[i] + data[i + 1] + data[i + 2]) / 3;
+
+              if (motionHistory.length > 0) {
+                const histKey = `${x >> 3}-${y >> 3}`;
+                const prev = motionHistory[motionHistory.length - 1].get(histKey);
+                if (prev !== undefined) {
+                  blockMotion += Math.abs(brightness - prev);
+                }
+              }
+            }
+          }
+
+          if (blockMotion > CONFIG.motionThreshold * 5) {
+            motionPoints.push({
+              x: bx / 160,
+              y: by / 120
+            });
+          }
+        }
+      }
+
+      // Store brightness map for next frame
+      const brightnessMap = new Map();
+      for (let y = 0; y < 120; y += 8) {
+        for (let x = 0; x < 160; x += 8) {
+          const i = (y * 160 + x) * 4;
+          const brightness = (data[i] + data[i + 1] + data[i + 2]) / 3;
+          brightnessMap.set(`${x >> 3}-${y >> 3}`, brightness);
+        }
+      }
+      motionHistory.push(brightnessMap);
+      if (motionHistory.length > CONFIG.motionSmoothingFrames) {
+        motionHistory.shift();
+      }
+
+      // Update motion sources (smoothed)
+      motionSources = motionPoints.map(pt => ({
+        x: pt.x * CONFIG.cols,
+        y: pt.y * CONFIG.rows,
+        weight: 1
+      }));
+
+      // Cluster nearby points
+      if (motionSources.length > 5) {
+        const clustered = [];
+        const clusterDist = 8;
+
+        for (const source of motionSources) {
+          let merged = false;
+          for (const cluster of clustered) {
+            const dx = source.x - cluster.x;
+            const dy = source.y - cluster.y;
+            if (Math.sqrt(dx * dx + dy * dy) < clusterDist) {
+              cluster.x = (cluster.x + source.x) / 2;
+              cluster.y = (cluster.y + source.y) / 2;
+              cluster.weight++;
+              merged = true;
+              break;
+            }
+          }
+          if (!merged) {
+            clustered.push({ ...source });
+          }
+        }
+
+        motionSources = clustered.slice(0, 8);
+      }
+    }
+
+    // ========================================
+    // NEURAL NETWORK LOGIC
+    // ========================================
+    function initNetwork() {
+      // Create initial root nodes
+      const centerX = CONFIG.cols / 2;
+      const centerY = CONFIG.rows / 2;
+
+      nodes.push(new Node(centerX, centerY, true));
+      nodes.push(new Node(centerX - 10, centerY - 5, true));
+      nodes.push(new Node(centerX + 10, centerY + 5, true));
+
+      tips.push(new Tip(centerX, centerY, Math.PI * 0.25));
+      tips.push(new Tip(centerX - 10, centerY - 5, Math.PI * 0.75));
+      tips.push(new Tip(centerX + 10, centerY + 5, Math.PI * 1.5));
+    }
+
+    function updateNetwork() {
+      // Update existing nodes
+      for (const node of nodes) {
+        node.update();
+      }
+
+      // Process growing tips
+      for (let i = tips.length - 1; i >= 0; i--) {
+        const tip = tips[i];
+
+        // Check if tip should become a node
+        const shouldConvert = tip.isMature() ||
+          (motionSources.length === 0 && Math.random() < 0.005);
+
+        if (shouldConvert) {
+          // Add as node
+          const node = new Node(
+            Math.round(tip.x),
+            Math.round(tip.y)
+          );
+          nodes.push(node);
+
+          // Remove tip
+          tips.splice(i, 1);
+          continue;
+        }
+
+        // Check for branching
+        if (tip.shouldBranch() && tips.length < CONFIG.maxTips) {
+          const branchAngle = tip.angle + (Math.random() > 0.5 ? 0.5 : -0.5);
+          tips.push(new Tip(tip.x, tip.y, branchAngle, 0));
+        }
+
+        // Check for connecting to other tips
+        for (let j = i + 1; j < tips.length; j++) {
+          const other = tips[j];
+          const dx = tip.x - other.x;
+          const dy = tip.y - other.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+
+          if (dist < 3) {
+            // Connect tips with a node
+            const midX = (tip.x + other.x) / 2;
+            const midY = (tip.y + other.y) / 2;
+            const node = new Node(Math.round(midX), Math.round(midY));
+            node.char = CHARS.junction[Math.floor(Math.random() * CHARS.junction.length)];
+            nodes.push(node);
+
+            // Remove both tips
+            tips.splice(i, 1);
+            tips.splice(j - 1, 1);
+            break;
+          }
+        }
+
+        // Update tip position
+        tip.update();
+      }
+
+      // Spawn new tips from motion
+      if (motionSources.length > 0 && tips.length < CONFIG.maxTips) {
+        // Find nearest node to motion
+        for (const source of motionSources) {
+          // Find closest node
+          let closestNode = null;
+          let closestDist = Infinity;
+
+          for (const node of nodes) {
+            const dx = node.x - source.x;
+            const dy = node.y - source.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < closestDist) {
+              closestDist = dist;
+              closestNode = node;
+            }
+          }
+
+          // Spawn tip from closest node toward motion
+          if (closestNode && closestDist > 5) {
+            const angle = Math.atan2(source.y - closestNode.y, source.x - closestNode.x);
+            if (Math.random() < 0.15) {
+              tips.push(new Tip(closestNode.x, closestNode.y, angle));
+            }
+          }
+
+          // Also spawn from existing tips if they're far from motion
+          for (const tip of tips) {
+            const dx = source.x - tip.x;
+            const dy = source.y - tip.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist > 15 && Math.random() < 0.08) {
+              tips.push(new Tip(tip.x, tip.y, Math.atan2(dy, dx)));
+            }
+          }
+        }
+      }
+
+      // Ambient growth (when no motion)
+      if (motionSources.length === 0 && tips.length < 5 && Math.random() < CONFIG.ambientDrift) {
+        if (nodes.length > 0) {
+          const node = nodes[Math.floor(Math.random() * nodes.length)];
+          const angle = Math.random() * Math.PI * 2;
+          tips.push(new Tip(node.x, node.y, angle));
+        }
+      }
+
+      // Enforce node limit
+      while (nodes.length > CONFIG.maxNodes) {
+        // Remove oldest dormant nodes
+        let oldest = null;
+        let oldestIdx = -1;
+        for (let i = 0; i < nodes.length; i++) {
+          if (!nodes[i].isRoot && nodes[i].dormantFrames > 50) {
+            if (!oldest || nodes[i].age > oldest.age) {
+              oldest = nodes[i];
+              oldestIdx = i;
+            }
+          }
+        }
+        if (oldestIdx >= 0) {
+          nodes.splice(oldestIdx, 1);
+        } else {
+          break;
+        }
+      }
+    }
+
+    // ========================================
+    // RENDERING
+    // ========================================
+    function render() {
+      // Create grid
+      const grid = [];
+      for (let y = 0; y < CONFIG.rows; y++) {
+        grid[y] = [];
+        for (let x = 0; x < CONFIG.cols; x++) {
+          grid[y][x] = { char: ' ', opacity: 0 };
+        }
+      }
+
+      // Place nodes
+      for (const node of nodes) {
+        const x = Math.round(node.x);
+        const y = Math.round(node.y);
+        if (x >= 0 && x < CONFIG.cols && y >= 0 && y < CONFIG.rows) {
+          grid[y][x] = { char: node.char, opacity: node.opacity };
+        }
+      }
+
+      // Place tips (on top)
+      for (const tip of tips) {
+        const x = Math.round(tip.x);
+        const y = Math.round(tip.y);
+        if (x >= 0 && x < CONFIG.cols && y >= 0 && y < CONFIG.rows) {
+          grid[y][x] = { char: tip.char, opacity: 1 };
+        }
+      }
+
+      // Draw connections
+      for (let y = 0; y < CONFIG.rows; y++) {
+        for (let x = 1; x < CONFIG.cols; x++) {
+          const cell = grid[y][x];
+          const prev = grid[y][x - 1];
+          if (cell.opacity > 0.3 && prev.opacity > 0.3) {
+            // Horizontal connection
+            const connChar = '-';
+            if (grid[y][x - 1].char === ' ') {
+              grid[y][x - 1] = { char: connChar, opacity: 0.4 };
+            }
+          }
+        }
+      }
+
+      for (let y = 1; y < CONFIG.rows; y++) {
+        for (let x = 0; x < CONFIG.cols; x++) {
+          const cell = grid[y][x];
+          const prev = grid[y - 1][x];
+          if (cell.opacity > 0.3 && prev.opacity > 0.3) {
+            // Vertical connection
+            if (grid[y - 1][x].char === ' ') {
+              grid[y - 1][x] = { char: '|', opacity: 0.4 };
+            }
+          }
+        }
+      }
+
+      // Build HTML string
+      let html = '';
+      for (let y = 0; y < CONFIG.rows; y++) {
+        for (let x = 0; x < CONFIG.cols; x++) {
+          const cell = grid[y][x];
+          const color = cell.opacity < 1 ?
+            `hsl(0, 0%, ${30 + cell.opacity * 60}%)` : '#000000';
+          html += `<span style="color: ${color}; opacity: ${cell.opacity}">${cell.char}</span>`;
+        }
+        html += '\n';
+      }
+
+      canvasEl.innerHTML = html;
+    }
+
+    // ========================================
+    // ANIMATION LOOP
+    // ========================================
+    function animate(timestamp) {
+      const delta = timestamp - lastFrameTime;
+      lastFrameTime = timestamp;
+      frameCount++;
+
+      // Process webcam every 3 frames
+      if (frameCount % 3 === 0) {
+        processWebcam();
+      }
+
+      // Update network
+      updateNetwork();
+
+      // Render
+      render();
+
+      requestAnimationFrame(animate);
+    }
+
+    // ========================================
+    // WINDOW RESIZE
+    // ========================================
+    function handleResize() {
+      const charWidth = canvasEl.clientWidth / CONFIG.cols;
+      const charHeight = canvasEl.clientHeight / CONFIG.rows;
+      const fontSize = Math.min(charWidth, charHeight * 1.2);
+      canvasEl.style.fontSize = `${fontSize}px`;
+    }
+
+    window.addEventListener('resize', handleResize);
+
+    // ========================================
+    // INITIALIZATION
+    // ========================================
+    async function init() {
+      initNetwork();
+      handleResize();
+
+      await initWebcam();
+
+      requestAnimationFrame(animate);
+    }
+
+    init();
+  </script>
+</body>
+</html>
